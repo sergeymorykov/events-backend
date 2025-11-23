@@ -3,6 +3,9 @@ telethon==1.36.0
 pymongo==4.6.1
 python-dotenv==1.0.0
 
+# Scheduler
+apscheduler==3.10.4
+
 # Optional: для асинхронной работы с MongoDB (если нужно в будущем)
 # motor==3.3.2
 

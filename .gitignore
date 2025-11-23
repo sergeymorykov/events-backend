@@ -33,6 +33,8 @@ wheels/
 
 # Logs
 *.log
+telegram_scheduler.log
+telegram_parser.log
 
 # IDE
 .vscode/

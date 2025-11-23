@@ -27,7 +27,8 @@ class ProcessedEvent(BaseModel):
     user_interests: List[str] = Field(default_factory=list, description="Список пользовательских интересов")
     
     # Дополнительные поля
-    image_url: Optional[str] = Field(None, description="URL изображения (исходного или сгенерированного)")
+    image_urls: Optional[List[str]] = Field(None, description="Список путей к исходным или сгенерированным изображениям")
+    image_url: Optional[str] = Field(None, description="[DEPRECATED] Старое поле, не использовать")
     image_caption: Optional[str] = Field(None, description="Описание изображения от AI")
     source_post_url: Optional[str] = Field(None, description="Ссылка на исходный пост")
     
@@ -58,7 +59,8 @@ class ProcessedEvent(BaseModel):
 class RawPost(BaseModel):
     """Модель сырого поста из MongoDB."""
     text: str = Field(..., description="Текст поста")
-    photo_url: Optional[str] = Field(None, description="Путь к локальной картинке")
+    photo_urls: Optional[List[str]] = Field(None, description="Список путей к локальным картинкам")
+    photo_url: Optional[str] = Field(None, description="[DEPRECATED] Старое поле, не использовать")
     hashtags: List[str] = Field(default_factory=list, description="Хештеги поста")
     post_id: Optional[int] = Field(None, description="ID поста")
     

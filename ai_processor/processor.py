@@ -110,79 +110,79 @@ class AIProcessor:
             Объект ProcessedEvent или None при ошибке
         """
         try:
-            # Валидация входных данных
             post = RawPost(**raw_post)
             post_id = post.post_id or 0
             
             logger.info(f"=" * 60)
             logger.info(f"Обработка поста ID: {post_id}")
             logger.info(f"Текст: {post.text[:100]}...")
+
+            # Получаем список картинок (новое поле)
+            photo_urls = post.photo_urls or ([] if post.photo_urls is not None else ([post.photo_url] if post.photo_url else []))
+            logger.info(f"Пути к изображениям из БД: {photo_urls}")
             
-            # Шаг 1: Обработка изображения
-            image_path = None
-            image_base64 = None
-            
-            if post.photo_url:
-                # Скачивание существующего изображения
-                logger.info("Скачивание изображения из поста...")
-                
-                # photo_url может быть словарем с информацией о фото
-                if isinstance(post.photo_url, dict):
-                    image_path = await self.image_handler.download_telegram_photo(
-                        post.photo_url,
-                        post_id
-                    )
-                elif isinstance(post.photo_url, str):
-                    image_path = await self.image_handler.download_image_from_url(post.photo_url)
-            
-            if not image_path:
-                # Генерация изображения (автоматический выбор метода)
-                logger.info("Генерация изображения...")
-                
-                # Используем текст поста как промпт (ограничиваем длину)
-                prompt = post.text[:500] if len(post.text) > 500 else post.text
-                image_path = await self.image_handler.generate_image(prompt)
-                
-                if not image_path:
-                    logger.warning("Не удалось сгенерировать изображение")
-            
-            # Шаг 2: Генерация описания изображения (если изображение есть и было в photo_url)
-            image_caption = None
-            
-            if image_path and post.photo_url:
-                logger.info("Генерация описания изображения...")
-                image_base64 = self.image_handler.image_to_base64(image_path)
-                
-                if image_base64:
-                    image_caption = await self.llm_handler.generate_image_caption(image_base64)
-                    
-                    if image_caption:
-                        logger.info(f"Описание изображения: {image_caption[:100]}...")
+            # Проверяем существование файлов относительно images_dir
+            valid_photo_paths = []
+            for p in photo_urls:
+                if not p:
+                    continue
+                # Проверяем путь относительно images_dir
+                full_path = self.image_handler.images_dir / p
+                if full_path.exists():
+                    valid_photo_paths.append(p)
+                    logger.info(f"Найден файл: {full_path}")
+                else:
+                    logger.warning(f"Файл не найден: {full_path}")
+
+            image_base64_list = []
+            image_captions = []
+
+            # Если есть хотя бы одна картинка
+            if valid_photo_paths:
+                logger.info(f"Обработка {len(valid_photo_paths)} изображений...")
+                for path in valid_photo_paths:
+                    image_base64 = self.image_handler.image_to_base64(path)
+                    image_base64_list.append(image_base64)
+                    if image_base64:
+                        logger.info("Генерация описания изображения...")
+                        cap = await self.llm_handler.generate_image_caption(image_base64)
+                        image_captions.append(cap)
+                        if cap:
+                            logger.info(f"Описание изображения: {cap[:100]}...")
                     else:
-                        logger.warning("Не удалось сгенерировать описание изображения")
-            
+                        image_captions.append(None)
+            else:
+                logger.info("Генерация изображения...")
+                prompt = post.text[:500] if len(post.text) > 500 else post.text
+                gen_path = await self.image_handler.generate_image(prompt)
+                if gen_path:
+                    valid_photo_paths = [gen_path]
+                    image_base64 = self.image_handler.image_to_base64(gen_path)
+                    image_base64_list.append(image_base64)
+                    if image_base64:
+                        cap = await self.llm_handler.generate_image_caption(image_base64)
+                        image_captions.append(cap)
+                    else:
+                        image_captions.append(None)
+                else:
+                    logger.warning("Не удалось сгенерировать изображение")
+
             # Шаг 3: Получение существующих категорий и интересов из БД
             existing_categories = self.db_handler.get_all_categories()
             existing_interests = self.db_handler.get_all_interests()
-            
             logger.info(f"Существующих категорий: {len(existing_categories)}")
             logger.info(f"Существующих интересов: {len(existing_interests)}")
-            
-            # Шаг 4: Генерация структурированных данных через LLM
             logger.info("Генерация данных события через LLM...")
-            
             llm_response = await self.llm_handler.generate_event_data(
                 post_text=post.text,
-                image_caption=image_caption,
+                image_caption=image_captions[0] if image_captions else None,
                 hashtags=post.hashtags,
                 existing_categories=existing_categories,
                 existing_interests=existing_interests,
-                image_base64=image_base64 if image_path and not post.photo_url else None
+                image_base64=image_base64_list[0] if image_base64_list else None
             )
-            
             if not llm_response:
                 logger.error("Не удалось получить данные от LLM")
-                # Возвращаем частичный результат
                 llm_response = type('obj', (object,), {
                     'title': None,
                     'description': None,
@@ -191,8 +191,6 @@ class AIProcessor:
                     'categories': [],
                     'user_interests': []
                 })()
-            
-            # Шаг 5: Формирование результата
             processed_event = ProcessedEvent(
                 title=llm_response.title,
                 description=llm_response.description,
@@ -200,24 +198,20 @@ class AIProcessor:
                 price=llm_response.price,
                 categories=llm_response.categories,
                 user_interests=llm_response.user_interests,
-                image_url=image_path,
-                image_caption=image_caption,
-                source_post_url=post.post_url,
+                image_urls=valid_photo_paths if valid_photo_paths else None,
+                image_url=valid_photo_paths[0] if valid_photo_paths else None,  # deprecated
+                image_caption=image_captions[0] if image_captions else None,
+                source_post_url=None,
                 raw_post_id=post_id
             )
-            
             logger.info(f"✅ Пост обработан успешно:")
             logger.info(f"  Название: {processed_event.title}")
             logger.info(f"  Дата: {processed_event.date}")
             logger.info(f"  Категории: {processed_event.categories}")
             logger.info(f"  Интересы: {processed_event.user_interests}")
-            
-            # Шаг 6: Сохранение в БД
             success = self.db_handler.save_processed_event(processed_event)
-            
             if not success:
                 logger.warning("Не удалось сохранить событие в БД")
-            
             return processed_event
             
         except Exception as e:

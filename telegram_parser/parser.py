@@ -193,6 +193,42 @@ class TelegramParser:
         await self.telegram_client.download_media(message, file=str(file_path))
         return str(file_path)
     
+    async def _download_photos(self, message, channel_username: str) -> List[str]:
+        """Скачивает все фотографии из сообщения (и альбома, если есть), возвращает список относительных путей."""
+        images_dir = Path('images') / channel_username
+        images_dir.mkdir(parents=True, exist_ok=True)
+        photo_paths = []
+        entity = channel_username
+        # Получаем entity, если это id (или если требуется)
+        try:
+            if isinstance(channel_username, int) or (isinstance(channel_username, str) and channel_username.lstrip('-').isdigit()):
+                entity = await self.telegram_client.get_entity(int(channel_username))
+            else:
+                # username/public - сначала пробуем его
+                try:
+                    entity = await self.telegram_client.get_entity(channel_username)
+                except ValueError:
+                    # fallback: возможно уже entity или id
+                    pass
+        except Exception as e:
+            logger.error(f"Не удалось получить entity для канала {channel_username}: {e}")
+            return []
+        if getattr(message, 'grouped_id', None):
+            messages = [msg async for msg in self.telegram_client.iter_messages(entity, limit=50)]
+            album_msgs = [msg for msg in messages if getattr(msg, 'grouped_id', None) == message.grouped_id and msg.media and isinstance(msg.media, MessageMediaPhoto)]
+            album_msgs.sort(key=lambda m: m.id)
+            for msg in album_msgs:
+                file_name = f'{msg.id}_{msg.media.photo.id}.jpg'
+                file_path = images_dir / file_name
+                await self.telegram_client.download_media(msg, file=str(file_path))
+                photo_paths.append(f"{channel_username}/{file_name}")
+        elif message.media and isinstance(message.media, MessageMediaPhoto):
+            file_name = f'{message.id}_{message.media.photo.id}.jpg'
+            file_path = images_dir / file_name
+            await self.telegram_client.download_media(message, file=str(file_path))
+            photo_paths.append(f"{channel_username}/{file_name}")
+        return photo_paths
+    
     async def _process_post(
         self,
         message,
@@ -252,14 +288,15 @@ class TelegramParser:
         text_preview = text[:100] + '...' if len(text) > 100 else text
         logger.info(f"✅ Пост {message.id} прошел фильтры | дата события: {event_date.date()} | хештеги: {hashtags} | текст: {text_preview}")
         # Скачиваем фото, если есть 
-        photo_path = await self._download_photo(message, channel_username)
+        photo_paths = await self._download_photos(message, channel_username)
         post_data = {
             'post_id': message.id,
             'channel': channel_username,
             'text': text,
             'date_parsed': event_date,
             'hashtags': hashtags,
-            'photo_url': photo_path,
+            'photo_urls': photo_paths,
+            'photo_url': photo_paths[0] if photo_paths else None,  # deprecated
             'views': getattr(message, 'views', None),
             'forwards': getattr(message, 'forwards', None),
             'message_date': message.date,

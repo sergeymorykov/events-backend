@@ -7,6 +7,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 
+import os
+from pathlib import Path
 from pymongo import MongoClient, errors as mongo_errors
 from telethon import TelegramClient
 from telethon.errors import (
@@ -175,7 +177,23 @@ class TelegramParser:
         
         return self.channel_filters[channel_username]
     
-    def _process_post(
+    async def _download_photo(self, message, channel_username: str) -> Optional[str]:
+        """Скачивает фото из сообщения, сохраняет в images/{channel}, возвращает относительный путь или None."""
+        if not message.media or not isinstance(message.media, MessageMediaPhoto):
+            return None
+        photo = message.media.photo
+        if not photo:
+            return None
+        images_dir = Path('images') / channel_username
+        images_dir.mkdir(parents=True, exist_ok=True)
+        file_name = f'{message.id}_{photo.id}.jpg'
+        file_path = images_dir / file_name
+        if file_path.exists():
+            return str(file_path)
+        await self.telegram_client.download_media(message, file=str(file_path))
+        return str(file_path)
+    
+    async def _process_post(
         self,
         message,
         channel_username: str,
@@ -233,21 +251,20 @@ class TelegramParser:
         # Пост прошел все фильтры
         text_preview = text[:100] + '...' if len(text) > 100 else text
         logger.info(f"✅ Пост {message.id} прошел фильтры | дата события: {event_date.date()} | хештеги: {hashtags} | текст: {text_preview}")
-        
+        # Скачиваем фото, если есть 
+        photo_path = await self._download_photo(message, channel_username)
         post_data = {
             'post_id': message.id,
             'channel': channel_username,
             'text': text,
             'date_parsed': event_date,
             'hashtags': hashtags,
-            'post_url': self._build_post_url(channel_username, message.id),
-            'photo_url': self._extract_photo_info(message),
+            'photo_url': photo_path,
             'views': getattr(message, 'views', None),
             'forwards': getattr(message, 'forwards', None),
             'message_date': message.date,
             'parsed_at': datetime.utcnow()
         }
-        
         return post_data
     
     async def _save_post(self, post_data: Dict[str, Any]) -> bool:
@@ -399,7 +416,7 @@ class TelegramParser:
                     continue
                 
                 # Обработка поста
-                post_data = self._process_post(message, channel_identifier, channel_username)
+                post_data = await self._process_post(message, channel_identifier, channel_username)
                 
                 # Если пост прошел фильтры (не None), сохраняем его
                 if post_data:

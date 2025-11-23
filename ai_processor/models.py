@@ -58,8 +58,7 @@ class ProcessedEvent(BaseModel):
 class RawPost(BaseModel):
     """Модель сырого поста из MongoDB."""
     text: str = Field(..., description="Текст поста")
-    photo_url: Optional[dict] = Field(None, description="Информация о фото")
-    post_url: str = Field(..., description="Ссылка на пост")
+    photo_url: Optional[str] = Field(None, description="Путь к локальной картинке")
     hashtags: List[str] = Field(default_factory=list, description="Хештеги поста")
     post_id: Optional[int] = Field(None, description="ID поста")
     

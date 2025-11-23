@@ -2,7 +2,9 @@
 
 Бэкенд часть приложения для поиска мероприятий из Telegram-каналов.
 
-> 🚀 **[Быстрый старт →](QUICKSTART.md)** — начните работу за 5 минут!
+> 🚀 **[Быстрый старт →](telegram_parser/QUICKSTART.md)** — начните работу за 5 минут!
+> 
+> 📚 **[Документация модуля →](telegram_parser/README.md)** — полная документация парсера
 
 ## Telegram Parser v2.0
 
@@ -134,6 +136,8 @@ python run_scheduler.py
 - 🔄 Не дублирует уже сохраненные посты
 - 📊 Непрерывный мониторинг каналов
 - 💾 Отдельный лог-файл `telegram_scheduler.log`
+
+> 📖 **Подробнее:** [SCHEDULER_GUIDE.md](telegram_parser/SCHEDULER_GUIDE.md)
 
 #### 3. Авторизация в Telegram
 
@@ -284,6 +288,8 @@ CHANNEL_spbevents_BLACKLIST=реклама,партнерство
 # Для kulturaru - используются глобальные фильтры (если заданы)
 ```
 
+> 📖 **Подробнее:** [FEATURE_CHANNEL_FILTERS.md](telegram_parser/FEATURE_CHANNEL_FILTERS.md)
+
 #### Комбинированный подход (глобальные + специфичные):
 ```env
 CHANNEL_USERNAME=channel1,channel2,channel3
@@ -354,7 +360,20 @@ CHANNEL_USERNAME=durov,+lyO6V_0sqeA3OWRi,telegram
 python get_channel_id.py
 ```
 
-Подробнее: **[PRIVATE_CHANNELS.md](PRIVATE_CHANNELS.md)** | **[GET_CHANNEL_ID.md](GET_CHANNEL_ID.md)**
+> 📖 **Подробнее:** [PRIVATE_CHANNELS.md](telegram_parser/PRIVATE_CHANNELS.md) | [GET_CHANNEL_ID.md](telegram_parser/GET_CHANNEL_ID.md)
+
+### 📚 Полная документация
+
+Вся документация по парсеру находится в папке `telegram_parser/`:
+
+- **[README.md](telegram_parser/README.md)** — навигация по всей документации
+- **[QUICKSTART.md](telegram_parser/QUICKSTART.md)** — быстрый старт за 5 минут
+- **[SCHEDULER_GUIDE.md](telegram_parser/SCHEDULER_GUIDE.md)** — автоматический парсинг по расписанию
+- **[FEATURE_CHANNEL_FILTERS.md](telegram_parser/FEATURE_CHANNEL_FILTERS.md)** — индивидуальные фильтры для каналов
+- **[PRIVATE_CHANNELS.md](telegram_parser/PRIVATE_CHANNELS.md)** — работа с приватными каналами
+- **[GET_CHANNEL_ID.md](telegram_parser/GET_CHANNEL_ID.md)** — получение ID приватного канала
+- **[EXAMPLES.md](telegram_parser/EXAMPLES.md)** — примеры использования и MongoDB запросы
+- **[PARSER_FIXES.md](telegram_parser/PARSER_FIXES.md)** — история исправлений парсера
 
 ### 📄 Лицензия
 

@@ -17,7 +17,8 @@ from datetime import datetime
 
 import aiohttp
 from telethon import TelegramClient
-from openai import AsyncOpenAI
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +67,21 @@ class ImageHandler:
         self.image_llm_model = image_llm_model
         self._current_image_key_idx = 0
         
-        # Инициализация OpenAI клиента для генерации изображений
-        if self.image_llm_base_url and self.image_llm_api_keys and self.image_llm_model:
-            self._image_client = AsyncOpenAI(
-                base_url=self.image_llm_base_url,
-                api_key=self.image_llm_api_keys[0]
-            )
-            logger.info(f"LLM Image Generator инициализирован: model={self.image_llm_model}")
+        # Инициализация Google GenAI клиента для генерации изображений
+        if self.image_llm_api_keys and self.image_llm_model:
+            try:
+                self._image_client = genai.Client(
+                    api_key=self.image_llm_api_keys[0],
+                    vertexai=True,
+                    http_options=types.HttpOptions(
+                        api_version='v1',
+                        base_url='https://zenmux.ai/api/vertex-ai'
+                    ),
+                )
+                logger.info(f"Google GenAI Image Generator инициализирован: model={self.image_llm_model}")
+            except Exception as e:
+                logger.error(f"Ошибка инициализации Google GenAI клиента: {e}")
+                self._image_client = None
         else:
             self._image_client = None
     
@@ -279,7 +288,7 @@ class ImageHandler:
                     "num_images": 1,
                     "negativePromptUnclip": "",
                     "generateParams": {
-                        "query": prompt[:1000]  # Ограничение длины промпта
+                        "query": "Сгенерируй изображение по следующему описанию: " + prompt[:1000]  # Ограничение длины промпта
                     }
                 }
                 
@@ -365,59 +374,90 @@ class ImageHandler:
     
     async def generate_image_llm(self, prompt: str, size: str = "1024x1024") -> Optional[str]:
         """
-        Генерация изображения через LLM API (ZenMax, OpenAI DALL-E, Flux и др.).
+        Генерация изображения через Google GenAI API (ZenMux).
         
         Args:
             prompt: Текстовый промпт для генерации
-            size: Размер изображения (1024x1024, 1792x1024 и т.д.)
+            size: Размер изображения (не используется для Google GenAI, оставлен для совместимости)
             
         Returns:
             Путь к сохраненному изображению или None при ошибке
         """
         if not self._image_client or not self.image_llm_model:
-            logger.error("LLM Image Generation не настроен")
+            logger.error("Google GenAI Image Generation не настроен")
             return None
         
         try:
             logger.info(f"Генерация изображения через {self.image_llm_model}...")
             
-            # Генерация изображения
-            response = await self._image_client.images.generate(
-                model=self.image_llm_model,
-                prompt=prompt[:1000],  # Ограничение длины промпта
-                size=size,
-                n=1
-            )
+            # Ограничение длины промпта
+            truncated_prompt = prompt[:1000] if len(prompt) > 1000 else prompt
+            truncated_prompt = "Сгенерируй изображение по следующему описанию: " + truncated_prompt
             
-            if not response.data or len(response.data) == 0:
-                logger.error("Не получено изображение от LLM API")
+            # Генерация изображения через Google GenAI (синхронный вызов в executor)
+            def _generate_sync():
+                response = self._image_client.models.generate_content(
+                    model=self.image_llm_model,
+                    contents=[truncated_prompt],
+                    config=types.GenerateContentConfig(
+                        response_modalities=["IMAGE"]
+                    )
+                )
+                return response
+            
+            # Выполняем синхронный вызов в executor для async/await
+            response = await asyncio.to_thread(_generate_sync)
+            
+            if not response or not response.parts:
+                logger.error("Не получено изображение от Google GenAI API")
                 return None
             
-            image_data = response.data[0]
+            # Обрабатываем части ответа (текст и изображение)
+            image_found = False
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"genai_generated_{timestamp}.png"
+            # Создаём абсолютный путь для сохранения
+            filepath = self.images_dir.resolve() / filename
             
-            # Поддержка разных форматов ответа
-            if hasattr(image_data, 'url') and image_data.url:
-                # URL-формат - скачиваем изображение
-                return await self.download_image_from_url(image_data.url)
-            elif hasattr(image_data, 'b64_json') and image_data.b64_json:
-                # Base64-формат - сохраняем напрямую
-                image_bytes = base64.b64decode(image_data.b64_json)
-                
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"llm_generated_{timestamp}.png"
-                filepath = self.images_dir / filename
-                
-                with open(filepath, 'wb') as f:
-                    f.write(image_bytes)
-                
-                logger.info(f"Изображение сгенерировано через LLM: {filepath}")
-                return str(filepath)
-            else:
-                logger.error("Неизвестный формат ответа от LLM API")
+            for part in response.parts:
+                if part.text is not None:
+                    logger.debug(f"Текстовая часть ответа: {part.text}")
+                elif part.inline_data is not None:
+                    # Сохраняем изображение
+                    image = part.as_image()
+                    filepath.parent.mkdir(parents=True, exist_ok=True)  # Убеждаемся, что директория существует
+                    image.save(str(filepath))
+                    image_found = True
+                    logger.info(f"Изображение сгенерировано через Google GenAI: {filepath}")
+                    break
+            
+            if not image_found:
+                logger.error("В ответе не найдено изображение")
                 return None
+            
+            # Возвращаем только имя файла (относительный путь от images_dir)
+            # Это соответствует формату, используемому в других методах
+            return filename
                 
         except Exception as e:
-            logger.error(f"Ошибка генерации изображения через LLM: {e}", exc_info=True)
+            logger.error(f"Ошибка генерации изображения через Google GenAI: {e}", exc_info=True)
+            # Попробуем следующий ключ, если есть
+            if len(self.image_llm_api_keys) > 1:
+                self._current_image_key_idx = (self._current_image_key_idx + 1) % len(self.image_llm_api_keys)
+                logger.info(f"Переключение на следующий API ключ (индекс {self._current_image_key_idx})")
+                try:
+                    self._image_client = genai.Client(
+                        api_key=self.image_llm_api_keys[self._current_image_key_idx],
+                        vertexai=True,
+                        http_options=types.HttpOptions(
+                            api_version='v1',
+                            base_url='https://zenmux.ai/api/vertex-ai'
+                        ),
+                    )
+                    # Рекурсивный вызов с новым ключом (только один раз)
+                    return await self.generate_image_llm(prompt, size)
+                except Exception as retry_error:
+                    logger.error(f"Ошибка при повторной попытке с новым ключом: {retry_error}")
             return None
     
     async def generate_image(self, prompt: str) -> Optional[str]:

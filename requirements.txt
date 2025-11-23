@@ -6,6 +6,12 @@ python-dotenv==1.0.0
 # Scheduler
 apscheduler==3.10.4
 
+# AI Processor dependencies
+pydantic==2.9.2
+aiohttp==3.10.10
+openai>=1.52.0
+tenacity>=9.0.0
+
 # Optional: для асинхронной работы с MongoDB (если нужно в будущем)
 # motor==3.3.2
 

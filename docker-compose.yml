@@ -8,14 +8,14 @@ services:
       - "27017:27017"
     volumes:
       - mongodb_data:/data/db
-    command: [--replSet, rs0]
+      - mongodb_config:/data/configdb
     networks:
       - events_network
     healthcheck:
-      test: echo "try { rs.status() } catch (err) { rs.initiate({_id:'rs0',members:[{_id:0,host:'87.222.87.72:27017'}]}) }" | mongosh --port 27017 --quiet
-      interval: 5s
-      start_period: 10s
-      retries: 30
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # FastAPI приложение
   api:
@@ -37,6 +37,7 @@ services:
     volumes:
       - ./images:/app/images
       - ./logs:/app/logs
+      - ./telegram_parser_session.session:/app/telegram_parser_session.session
     depends_on:
       mongodb:
         condition: service_healthy

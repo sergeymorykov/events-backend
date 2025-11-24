@@ -5,6 +5,7 @@
 - Универсальный интерфейс для генерации JSON
 """
 
+import asyncio
 import logging
 import json
 from typing import Optional, List, Tuple
@@ -276,9 +277,10 @@ class LLMHandler:
         
         # Retry механизм с ротацией ключей
         # Не повторяем ошибки аутентификации - они не временные
+        # Для rate limit используем более длительные задержки (до 60 секунд)
         async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(3),
-            wait=wait_random_exponential(min=1, max=10),
+            stop=stop_after_attempt(3),  # Уменьшаем попытки, но увеличиваем задержки
+            wait=wait_random_exponential(min=10, max=60),  # Увеличиваем задержку до 60 сек для rate limit
             retry=retry_if_not_exception_type(AuthenticationError),
             reraise=True,
         ):
@@ -294,6 +296,19 @@ class LLMHandler:
                     return message.content or ""
                     
                 except Exception as exc:
+                    # Проверка на rate limit - логируем отдельно и добавляем дополнительную задержку
+                    if isinstance(exc, RateLimitError):
+                        attempt_num = attempt.retry_state.attempt_number
+                        logger.warning(
+                            f"⚠️  Rate limit (429) - попытка {attempt_num}/3. "
+                            f"Ожидание перед повтором (может занять до 60 сек)..."
+                        )
+                        # Дополнительная задержка при rate limit (чем больше попытка, тем дольше ждем)
+                        if attempt_num < 3:
+                            extra_delay = 15 * attempt_num  # 15, 30 секунд
+                            logger.info(f"⏳ Дополнительная задержка {extra_delay} сек. из-за rate limit...")
+                            await asyncio.sleep(extra_delay)
+                    
                     # Проверка на ошибку аутентификации - не повторяем и не ротируем ключи
                     if self._is_authentication_error(exc):
                         logger.error(

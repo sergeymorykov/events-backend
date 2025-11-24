@@ -406,7 +406,14 @@ class ImageHandler:
                 return response
             
             # Выполняем синхронный вызов в executor для async/await
-            response = await asyncio.to_thread(_generate_sync)
+            # Обрабатываем возможные проблемы с event loop
+            try:
+                response = await asyncio.to_thread(_generate_sync)
+            except RuntimeError as e:
+                if "Event loop is closed" in str(e):
+                    logger.warning("Event loop закрыт, генерация изображения прервана")
+                    return None
+                raise
             
             if not response or not response.parts:
                 logger.error("Не получено изображение от Google GenAI API")

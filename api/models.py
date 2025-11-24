@@ -56,7 +56,7 @@ class EventBase(BaseModel):
     categories: List[str] = Field(default_factory=list)
     user_interests: List[str] = Field(default_factory=list)
     image_url: Optional[str] = None  # DEPRECATED, для совместимости
-    image_urls: List[str] = None
+    image_urls: Optional[List[str]] = None
     image_caption: Optional[str] = None
     source_post_url: Optional[str] = None
     processed_at: Optional[datetime] = None

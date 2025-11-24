@@ -288,7 +288,7 @@ async def get_events(
         events.sort(
             key=lambda e: (
                 -calculate_relevance(e), 
-                -e.date.timestamp() if e.date else 0
+                -datetime.fromisoformat(e.date).timestamp() if e.date else 0
             )
         )
         # ⚠️ raw_events НЕ трогаем — он нужен для курсоров в исходном порядке

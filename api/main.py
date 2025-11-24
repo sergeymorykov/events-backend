@@ -142,7 +142,8 @@ async def get_events(
     filter_query = {}
     
     if categories:
-        filter_query["categories"] = {"$in": categories}
+        # Используем $all для поиска событий, содержащих ВСЕ указанные категории
+        filter_query["categories"] = {"$all": categories}
     
     if min_price is not None or max_price is not None:
         price_filter = {}

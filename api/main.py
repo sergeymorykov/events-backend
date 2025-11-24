@@ -4,8 +4,10 @@ FastAPI приложение для MVP-сервиса мероприятий.
 
 from datetime import datetime
 from typing import List, Optional
+from pathlib import Path
 from fastapi import FastAPI, HTTPException, status, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
 from api.database import connect_to_mongo, close_mongo_connection, get_database
@@ -41,6 +43,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Раздача статических файлов (изображения)
+# Путь к папке images относительно корня проекта
+images_dir = Path(__file__).parent.parent / "images"
+images_dir.mkdir(exist_ok=True)  # Создаем папку, если её нет
+
+app.mount("/images", StaticFiles(directory=str(images_dir)), name="images")
 
 
 # ===== Lifecycle events =====

@@ -169,13 +169,12 @@ async def get_events(
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncIOMotorDatabase = Depends(get_database)
 ):
-    """Получение списка мероприятий с курсорной пагинацией."""
+    """Получение списка мероприятий с курсорной пагинацией и ранжированием по релевантности (при for_my_interests=True)."""
     
     # Построение фильтра
     filter_query = {}
     
     if categories:
-        # Используем $all для поиска событий, содержащих ВСЕ указанные категории
         filter_query["categories"] = {"$all": categories}
     
     if min_price is not None or max_price is not None:
@@ -191,33 +190,32 @@ async def get_events(
     if date_from or date_to:
         date_filter = {}
         if date_from:
-            date_from_str = date_from.replace(tzinfo=None).isoformat()
-            date_filter["$gte"] = date_from_str
+            date_filter["$gte"] = date_from.replace(tzinfo=None)
         if date_to:
-            date_to_str = date_to.replace(tzinfo=None).isoformat()
-            date_filter["$lte"] = date_to_str
+            date_filter["$lte"] = date_to.replace(tzinfo=None)
         if date_filter:
             filter_query["date"] = date_filter
     
     # Фильтр по интересам пользователя
+    user_scores = {}
     if for_my_interests:
         if not current_user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Требуется авторизация для фильтрации по интересам"
             )
-        
         user_interests = current_user.interests
         if user_interests:
             filter_query["$or"] = [
                 {"categories": {"$in": user_interests}},
                 {"user_interests": {"$in": user_interests}}
             ]
+        # Сохраняем веса для ранжирования
+        user_scores = current_user.interest_scores or {}
     
     # Декодирование курсора
     cursor_date = None
     cursor_id = None
-    
     if cursor:
         try:
             decoded = base64.urlsafe_b64decode(cursor).decode('utf-8')
@@ -233,65 +231,82 @@ async def get_events(
     
     # Добавление условия для курсорной пагинации
     if cursor_date and cursor_id:
-        # События строго раньше указанной даты или с той же датой, но _id < cursor_id
         cursor_condition = {
             "$or": [
                 {"date": {"$lt": cursor_date}},
-                {
-                    "date": cursor_date,
-                    "_id": {"$lt": cursor_id}
-                }
+                {"date": cursor_date, "_id": {"$lt": cursor_id}}
             ]
         }
-        
-        # Объединение с существующими фильтрами
         if filter_query:
             filter_query = {"$and": [filter_query, cursor_condition]}
         else:
             filter_query = cursor_condition
     
-    # Запрос с сортировкой и лимитом
-    # Запрашиваем limit+1 для проверки наличия следующей страницы
+    # Запрос: сортировка ТОЛЬКО по дате и _id (для корректной пагинации)
     mongo_cursor = db.processed_events.find(filter_query).sort([
         ("date", -1),
         ("_id", -1)
     ]).limit(limit + 1)
     
-    events = []
-    raw_events = []  # Сохраняем оригинальные данные для курсора
+    # Сбор данных в исходном порядке
+    raw_events = []  # Для генерации курсоров (исходный порядок)
+    events = []      # Для отображения (будет пересортирован при необходимости)
     async for event_data in mongo_cursor:
-        # Сохраняем оригинальные данные для генерации курсора
+        # Сохраняем исходные данные для курсора
         raw_events.append({
             "date": event_data["date"],
             "_id": event_data["_id"]
         })
         
+        # Преобразуем в EventResponse
         event_data["id"] = str(event_data.pop("_id"))
-        if "processed_at" in event_data and isinstance(event_data["processed_at"], datetime):
+        if "processed_at" in event_data:
             event_data["processed_at"] = event_data["processed_at"].isoformat()
         events.append(EventResponse(**event_data))
     
-    # Определение наличия следующей страницы
+    # Проверка наличия следующей страницы
     has_more = len(events) > limit
     if has_more:
-        events = events[:limit]  # Удаляем лишний элемент
-        raw_events = raw_events[:limit]
+        events = events[:limit]
+        raw_events = raw_events[:limit]  # Только для курсора — порядок сохранён
+    
+    # === РАНЖИРОВАНИЕ ПО РЕЛЕВАНТНОСТИ (только внутри текущей страницы) ===
+    if for_my_interests and user_scores and events:
+        def calculate_relevance(event: EventResponse) -> float:
+            score = 0.0
+            # Суммируем веса из categories
+            if event.categories:
+                for cat in event.categories:
+                    score += user_scores.get(cat, 0)
+            # Суммируем веса из user_interests
+            if event.user_interests:
+                for interest in event.user_interests:
+                    score += user_scores.get(interest, 0)
+            return score
+
+        # Сортируем: сначала по релевантности (убывание), затем по дате (убывание)
+        events.sort(
+            key=lambda e: (
+                -calculate_relevance(e), 
+                -e.date.timestamp() if e.date else 0
+            )
+        )
+        # ⚠️ raw_events НЕ трогаем — он нужен для курсоров в исходном порядке
     
     # Добавляем информацию о действиях пользователя
     if current_user:
         events = await enrich_events_with_user_actions(events, str(current_user.id), db)
     
-    # Генерация следующего курсора
+    # === ГЕНЕРАЦИЯ КУРСОРОВ (по исходному порядку из raw_events) ===
     next_cursor = None
     if has_more and raw_events:
-        last_raw = raw_events[-1]
+        last_raw = raw_events[-1]  # Последний в исходном порядке
         cursor_str = f"{last_raw['date']}|{str(last_raw['_id'])}"
         next_cursor = base64.urlsafe_b64encode(cursor_str.encode('utf-8')).decode('utf-8')
     
-    # Генерация предыдущего курсора
     prev_cursor = None
-    if raw_events and cursor:  # Если есть события и это не первая страница
-        first_raw = raw_events[0]
+    if raw_events and cursor:  # Не первая страница
+        first_raw = raw_events[0]  # Первый в исходном порядке
         cursor_str = f"{first_raw['date']}|{str(first_raw['_id'])}"
         prev_cursor = base64.urlsafe_b64encode(cursor_str.encode('utf-8')).decode('utf-8')
     

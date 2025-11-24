@@ -10,10 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from bson import ObjectId
+import base64
 from api.database import connect_to_mongo, close_mongo_connection, get_database
 from api.models import (
     UserRegister, UserLogin, Token, EventResponse, EventFilters,
-    UserResponse, MessageResponse, UserActionResponse, Event
+    UserResponse, MessageResponse, UserActionResponse, Event,
+    PaginatedEventsResponse
 )
 from api.auth import (
     create_user, authenticate_user, create_access_token,
@@ -58,6 +60,10 @@ app.mount("/images", StaticFiles(directory=str(images_dir)), name="images")
 async def startup_event():
     """Инициализация при запуске."""
     await connect_to_mongo()
+    
+    # Создание составного индекса для курсорной пагинации
+    db = await get_database()
+    await db.processed_events.create_index([("date", -1), ("_id", -1)])
 
 
 @app.on_event("shutdown")
@@ -117,8 +123,10 @@ async def login(user_data: UserLogin, db: AsyncIOMotorDatabase = Depends(get_dat
 
 # ===== Мероприятия =====
 
-@app.get("/events", response_model=List[EventResponse])
+@app.get("/events", response_model=PaginatedEventsResponse)
 async def get_events(
+    cursor: Optional[str] = Query(None, description="Курсор для пагинации (base64-закодированная строка)"),
+    limit: int = Query(20, ge=1, le=50, description="Количество событий на страницу"),
     categories: Optional[List[str]] = Query(None, description="Фильтр по категориям (можно указать несколько через запятую)"),
     min_price: Optional[int] = Query(None, description="Минимальная цена"),
     max_price: Optional[int] = Query(None, description="Максимальная цена"),
@@ -128,12 +136,12 @@ async def get_events(
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncIOMotorDatabase = Depends(get_database)
 ):
-    """Получение списка мероприятий с фильтрацией из коллекции processed_events."""
+    """Получение списка мероприятий с курсорной пагинацией."""
+    
     # Построение фильтра
     filter_query = {}
     
     if categories:
-        # Фильтр по нескольким категориям: событие должно содержать хотя бы одну из указанных категорий
         filter_query["categories"] = {"$in": categories}
     
     if min_price is not None or max_price is not None:
@@ -145,12 +153,10 @@ async def get_events(
         if price_filter:
             filter_query["price.amount"] = price_filter
     
-    # Фильтр по дате (date хранится как ISO 8601 строка в processed_events)
+    # Фильтр по дате
     if date_from or date_to:
         date_filter = {}
         if date_from:
-            # Конвертируем datetime в ISO 8601 строку для сравнения
-            # Убираем timezone info для корректного сравнения строк
             date_from_str = date_from.replace(tzinfo=None).isoformat()
             date_filter["$gte"] = date_from_str
         if date_to:
@@ -167,7 +173,6 @@ async def get_events(
                 detail="Требуется авторизация для фильтрации по интересам"
             )
         
-        # Получение интересов из токена или из БД
         user_interests = current_user.interests
         if user_interests:
             filter_query["$or"] = [
@@ -175,19 +180,72 @@ async def get_events(
                 {"user_interests": {"$in": user_interests}}
             ]
     
-    # Получение мероприятий из коллекции processed_events
-    cursor = db.processed_events.find(filter_query).sort("processed_at", -1)
-    events = []
+    # Декодирование курсора
+    cursor_date = None
+    cursor_id = None
     
-    async for event_data in cursor:
-        # Переименовываем _id в id для корректной сериализации
+    if cursor:
+        try:
+            decoded = base64.urlsafe_b64decode(cursor).decode('utf-8')
+            cursor_date, cursor_id_str = decoded.split('|')
+            if not ObjectId.is_valid(cursor_id_str):
+                raise ValueError("Invalid ObjectId in cursor")
+            cursor_id = ObjectId(cursor_id_str)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Неверный формат курсора: {str(e)}"
+            )
+    
+    # Добавление условия для курсорной пагинации
+    if cursor_date and cursor_id:
+        # События строго раньше указанной даты или с той же датой, но _id < cursor_id
+        cursor_condition = {
+            "$or": [
+                {"date": {"$lt": cursor_date}},
+                {
+                    "date": cursor_date,
+                    "_id": {"$lt": cursor_id}
+                }
+            ]
+        }
+        
+        # Объединение с существующими фильтрами
+        if filter_query:
+            filter_query = {"$and": [filter_query, cursor_condition]}
+        else:
+            filter_query = cursor_condition
+    
+    # Запрос с сортировкой и лимитом
+    # Запрашиваем limit+1 для проверки наличия следующей страницы
+    mongo_cursor = db.processed_events.find(filter_query).sort([
+        ("date", -1),
+        ("_id", -1)
+    ]).limit(limit + 1)
+    
+    events = []
+    async for event_data in mongo_cursor:
         event_data["id"] = str(event_data.pop("_id"))
-        # Преобразуем processed_at из datetime в строку, если нужно
         if "processed_at" in event_data and isinstance(event_data["processed_at"], datetime):
             event_data["processed_at"] = event_data["processed_at"].isoformat()
         events.append(EventResponse(**event_data))
     
-    return events
+    # Определение наличия следующей страницы
+    has_more = len(events) > limit
+    if has_more:
+        events = events[:limit]  # Удаляем лишний элемент
+    
+    # Генерация следующего курсора
+    next_cursor = None
+    if has_more and events:
+        last_event = events[-1]
+        cursor_str = f"{last_event.date}|{last_event.id}"
+        next_cursor = base64.urlsafe_b64encode(cursor_str.encode('utf-8')).decode('utf-8')
+    
+    return PaginatedEventsResponse(
+        items=events,
+        next_cursor=next_cursor
+    )
 
 
 @app.get("/events/{event_id}", response_model=EventResponse)

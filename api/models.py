@@ -56,7 +56,7 @@ class EventBase(BaseModel):
     categories: List[str] = Field(default_factory=list)
     user_interests: List[str] = Field(default_factory=list)
     image_url: Optional[str] = None  # DEPRECATED, для совместимости
-    image_urls: List[str] = Field(default_factory=list)
+    image_urls: List[str] = None
     image_caption: Optional[str] = None
     source_post_url: Optional[str] = None
     processed_at: Optional[datetime] = None
@@ -146,4 +146,10 @@ class MessageResponse(BaseModel):
 class ErrorResponse(BaseModel):
     """Модель ответа с ошибкой."""
     detail: str
+
+
+class PaginatedEventsResponse(BaseModel):
+    """Модель ответа с пагинированным списком мероприятий."""
+    items: List[EventResponse]
+    next_cursor: Optional[str] = None
 

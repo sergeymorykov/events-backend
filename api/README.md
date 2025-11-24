@@ -48,12 +48,32 @@ API будет доступен по адресу: http://localhost:8000
 
 ### Мероприятия
 
-- `GET /events` - Список мероприятий с фильтрацией
+- `GET /events` - Список мероприятий с курсорной пагинацией
   - Query параметры:
+    - `cursor` (optional) - курсор для пагинации (base64-закодированная строка с датой и ID последнего события)
+    - `limit` (optional, default=20, max=50) - количество событий на страницу
     - `categories` - фильтр по категориям (можно указать несколько через запятую, например: `?categories=концерт&categories=театр`)
     - `min_price`, `max_price` - фильтр по цене
     - `date_from`, `date_to` - фильтр по дате
     - `for_my_interests` - фильтр по интересам пользователя (требует авторизации)
+  - Ответ:
+    ```json
+    {
+      "items": [EventResponse, ...],
+      "next_cursor": "base64_encoded_cursor" // или null, если больше нет данных
+    }
+    ```
+  - Пример использования:
+    ```bash
+    # Первая страница
+    GET /events?limit=20
+    
+    # Следующая страница (используя next_cursor из предыдущего ответа)
+    GET /events?limit=20&cursor=MjAyNS0xMS0yOFQxOTozMDowMHw2NzQyZjEyM2FiY2RlZjEyMzQ1Njc4OTA
+    
+    # С фильтрами
+    GET /events?limit=10&categories=концерт&min_price=500&cursor=...
+    ```
 - `GET /events/{event_id}` - Детали мероприятия
 
 ### Действия с мероприятиями
@@ -93,6 +113,65 @@ Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGc...
 - **Участие** → +2.0 к каждому тегу
 
 Интересы пересчитываются автоматически: теги со score > 0.5 попадают в список `interests`.
+
+## Курсорная пагинация
+
+Эндпоинт `GET /events` использует **cursor-based pagination** для эффективной работы с большими наборами данных.
+
+### Преимущества курсорной пагинации:
+
+- **Консистентность**: нет дубликатов или пропущенных элементов при добавлении/удалении данных
+- **Производительность**: использует составной индекс `{"date": -1, "_id": -1}` для быстрых запросов
+- **Простота**: клиент просто передает `next_cursor` из предыдущего ответа
+
+### Принцип работы:
+
+1. **Первый запрос** (без `cursor`):
+   - Возвращает первые N событий, отсортированных по `date DESC, _id DESC`
+   - Если есть еще данные, возвращает `next_cursor`
+
+2. **Последующие запросы** (с `cursor`):
+   - Курсор декодируется из base64 в `date|_id`
+   - Возвращаются события **строго раньше** указанной позиции
+   - Фильтры применяются вместе с курсором
+
+3. **Конец данных**:
+   - Когда `next_cursor = null`, больше событий нет
+
+### Формат курсора:
+
+```
+base64_encode("ISO_date|event_id")
+```
+
+Пример: `"2025-11-28T19:30:00|6742f123abcdef1234567890"` → `"MjAyNS0xMS0yOFQxOTozMDowMHw2NzQyZjEyM2FiY2RlZjEyMzQ1Njc4OTA="`
+
+### Пример использования:
+
+```python
+# Python example
+import requests
+
+base_url = "http://localhost:8000"
+events = []
+cursor = None
+
+while True:
+    params = {"limit": 20}
+    if cursor:
+        params["cursor"] = cursor
+    
+    response = requests.get(f"{base_url}/events", params=params)
+    data = response.json()
+    
+    events.extend(data["items"])
+    cursor = data.get("next_cursor")
+    
+    if not cursor:
+        break  # Все данные получены
+
+print(f"Всего событий: {len(events)}")
+```
 
 ## Структура проекта
 

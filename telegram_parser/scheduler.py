@@ -123,11 +123,12 @@ class TelegramScheduler:
         # Добавление задачи в планировщик
         # Запуск каждые N часов
         self.scheduler.add_job(
-            lambda: asyncio.create_task(self.parse_job(is_first_run=False)),
+            self.parse_job,
             trigger=IntervalTrigger(hours=interval_hours),
             id='parse_channels',
             name='Парсинг Telegram каналов',
-            replace_existing=True
+            replace_existing=True,
+            kwargs={'is_first_run': False}
         )
         
         # Запуск планировщика

@@ -3,25 +3,19 @@ version: '3.8'
 services:
   # MongoDB база данных
   mongodb:
-    image: mongo:7.0
-    container_name: events_mongodb
-    restart: unless-stopped
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-admin}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-admin123}
-      MONGO_INITDB_DATABASE: ${MONGODB_DB_NAME:-events_db}
+    image: mongo:4.4
     ports:
-      - "${MONGODB_PORT:-27017}:27017"
+      - "27017:27017"
     volumes:
       - mongodb_data:/data/db
-      - mongodb_config:/data/configdb
+    command: [--replSet, rs0]
     networks:
       - events_network
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: echo "try { rs.status() } catch (err) { rs.initiate({_id:'rs0',members:[{_id:0,host:'87.222.87.72:27017'}]}) }" | mongosh --port 27017 --quiet
+      interval: 5s
+      start_period: 10s
+      retries: 30
 
   # FastAPI приложение
   api:

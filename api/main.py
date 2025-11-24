@@ -62,7 +62,7 @@ async def startup_event():
     await connect_to_mongo()
     
     # Создание составного индекса для курсорной пагинации
-    db = await get_database()
+    db = get_database()
     await db.processed_events.create_index([("date", -1), ("_id", -1)])
 
 

@@ -50,13 +50,13 @@ services:
       - events_network
     command: python run_api.py
 
-  # AI процессор (обработка постов)
+  # AI процессор (однократная обработка, для ручного запуска)
   ai_processor:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: events_ai_processor
-    restart: unless-stopped
+    restart: "no"
     environment:
       - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
       - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
@@ -73,6 +73,8 @@ services:
     networks:
       - events_network
     command: python run_ai_processor.py
+    profiles:
+      - manual  # Запускается только с --profile manual
 
   # Telegram парсер (опционально, можно запускать отдельно)
   telegram_parser:
@@ -100,12 +102,12 @@ services:
     profiles:
       - parser  # Запускается только с --profile parser
 
-  # Scheduler (планировщик задач)
-  scheduler:
+  # Telegram Parser Scheduler (планировщик парсинга)
+  telegram_scheduler:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: events_scheduler
+    container_name: events_telegram_scheduler
     restart: unless-stopped
     environment:
       - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
@@ -120,11 +122,35 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
-      api:
-        condition: service_started
     networks:
       - events_network
     command: python run_scheduler.py
+    profiles:
+      - scheduler  # Запускается только с --profile scheduler
+
+  # AI Processor Scheduler (планировщик обработки постов)
+  ai_processor_scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: events_ai_processor_scheduler
+    restart: unless-stopped
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
+      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - IMAGES_DIR=images
+    env_file:
+      - .env
+    volumes:
+      - ./images:/app/images
+      - ./logs:/app/logs
+      - ./telegram_parser_session.session:/app/telegram_parser_session.session
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - events_network
+    command: python run_ai_processor_scheduler.py
     profiles:
       - scheduler  # Запускается только с --profile scheduler
 

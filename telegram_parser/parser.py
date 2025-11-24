@@ -417,13 +417,18 @@ class TelegramParser:
             
             logger.info(f"Начинаем парсинг канала: {channel_display} (ID: {channel_id})")
             
-            # Вычисление даты начала парсинга (N месяцев назад)
-            months_back = self.config.MONTHS_BACK
-            # Используем utcnow() для timezone-aware datetime (Telethon использует UTC)
+            # Вычисление даты начала парсинга
+            # Если передан hours_back, используем его, иначе используем months_back из конфига
             from datetime import timezone
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=months_back * 30)
-            
-            logger.info(f"Парсинг постов с {cutoff_date.date()} (последние {months_back} мес.)")
+            if hasattr(self, '_hours_back') and self._hours_back is not None:
+                # Парсинг за последние N часов
+                cutoff_date = datetime.now(timezone.utc) - timedelta(hours=self._hours_back)
+                logger.info(f"Парсинг постов с {cutoff_date.strftime('%Y-%m-%d %H:%M:%S')} UTC (последние {self._hours_back} часов)")
+            else:
+                # Парсинг за последние N месяцев (по умолчанию)
+                months_back = self.config.MONTHS_BACK
+                cutoff_date = datetime.now(timezone.utc) - timedelta(days=months_back * 30)
+                logger.info(f"Парсинг постов с {cutoff_date.date()} (последние {months_back} мес.)")
             
             # Получение сообщений за период
             # iter_messages по умолчанию идет от новых к старым
@@ -537,9 +542,16 @@ class TelegramParser:
         logger.info(f"  ⚠️  Ошибки: {self.stats['errors']}")
         logger.info("=" * 60)
     
-    async def run(self):
-        """Основной метод запуска парсера."""
+    async def run(self, hours_back: Optional[int] = None):
+        """
+        Основной метод запуска парсера.
+        
+        Args:
+            hours_back: Период парсинга в часах (если указан, переопределяет MONTHS_BACK)
+        """
         try:
+            # Сохраняем период парсинга для использования в parse_all_channels
+            self._hours_back = hours_back
             logger.info("=" * 60)
             logger.info("🚀 ЗАПУСК TELEGRAM ПАРСЕРА")
             logger.info("=" * 60)
@@ -570,7 +582,10 @@ class TelegramParser:
                     if channel_blacklist:
                         logger.info(f"  • blacklist: {', '.join(channel_blacklist)}")
             
-            logger.info(f"Период парсинга: последние {self.config.MONTHS_BACK} месяцев")
+            if hasattr(self, '_hours_back') and self._hours_back is not None:
+                logger.info(f"Период парсинга: последние {self._hours_back} часов")
+            else:
+                logger.info(f"Период парсинга: последние {self.config.MONTHS_BACK} месяцев")
             logger.info("=" * 60)
             
             # Инициализация

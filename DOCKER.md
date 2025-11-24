@@ -48,8 +48,11 @@ docker-compose up -d mongodb api ai_processor
 # Telegram парсер (однократный запуск)
 docker-compose --profile parser up -d telegram_parser
 
-# Scheduler (планировщик задач)
-docker-compose --profile scheduler up -d scheduler
+# AI процессор (однократная обработка)
+docker-compose --profile manual up -d ai_processor
+
+# Schedulers (планировщики задач)
+docker-compose --profile scheduler up -d telegram_scheduler ai_processor_scheduler
 ```
 
 ## Структура сервисов
@@ -74,8 +77,16 @@ docker-compose --profile scheduler up -d scheduler
 - Сохраняет в MongoDB
 - Запускается по требованию (profile: parser)
 
-### Scheduler
-- Планирует автоматический парсинг и обработку
+### Telegram Parser Scheduler
+- Планирует автоматический парсинг Telegram каналов
+- Первый запуск: парсинг за последние 3 месяца
+- Последующие запуски: каждые 4 часа, парсинг за последние 4 часа
+- Запускается по требованию (profile: scheduler)
+
+### AI Processor Scheduler
+- Планирует автоматическую обработку постов через AI
+- Первый запуск: обработка всех необработанных постов
+- Последующие запуски: каждые 4 часа, обработка новых необработанных постов
 - Запускается по требованию (profile: scheduler)
 
 ## Production развертывание

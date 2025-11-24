@@ -1,0 +1,140 @@
+version: '3.8'
+
+services:
+  # MongoDB база данных
+  mongodb:
+    image: mongo:7.0
+    container_name: events_mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-admin123}
+      MONGO_INITDB_DATABASE: ${MONGODB_DB_NAME:-events_db}
+    ports:
+      - "${MONGODB_PORT:-27017}:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    networks:
+      - events_network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI приложение
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: events_api
+    restart: unless-stopped
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
+      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+    env_file:
+      - .env
+    volumes:
+      - ./images:/app/images
+      - ./logs:/app/logs
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - events_network
+    command: python run_api.py
+
+  # AI процессор (обработка постов)
+  ai_processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: events_ai_processor
+    restart: unless-stopped
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
+      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - IMAGES_DIR=images
+    env_file:
+      - .env
+    volumes:
+      - ./images:/app/images
+      - ./logs:/app/logs
+      - ./telegram_parser_session.session:/app/telegram_parser_session.session
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - events_network
+    command: python run_ai_processor.py
+
+  # Telegram парсер (опционально, можно запускать отдельно)
+  telegram_parser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: events_telegram_parser
+    restart: unless-stopped
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
+      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - IMAGES_DIR=images
+    env_file:
+      - .env
+    volumes:
+      - ./images:/app/images
+      - ./logs:/app/logs
+      - ./telegram_parser_session.session:/app/telegram_parser_session.session
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - events_network
+    command: python run_parser.py
+    profiles:
+      - parser  # Запускается только с --profile parser
+
+  # Scheduler (планировщик задач)
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: events_scheduler
+    restart: unless-stopped
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
+      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - IMAGES_DIR=images
+    env_file:
+      - .env
+    volumes:
+      - ./images:/app/images
+      - ./logs:/app/logs
+      - ./telegram_parser_session.session:/app/telegram_parser_session.session
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks:
+      - events_network
+    command: python run_scheduler.py
+    profiles:
+      - scheduler  # Запускается только с --profile scheduler
+
+volumes:
+  mongodb_data:
+    driver: local
+  mongodb_config:
+    driver: local
+
+networks:
+  events_network:
+    driver: bridge
+

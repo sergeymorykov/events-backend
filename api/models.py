@@ -81,6 +81,7 @@ class Event(EventBase):
 class EventResponse(EventBase):
     """Модель ответа с мероприятием (без внутренних полей)."""
     id: str  # Поле id без alias, так как мы переименовываем _id в id в коде
+    user_actions: List[str] = Field(default_factory=list)  # Список действий пользователя: like, dislike, participate
     
     class Config:
         populate_by_name = True

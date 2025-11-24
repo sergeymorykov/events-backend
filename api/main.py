@@ -54,6 +54,39 @@ images_dir.mkdir(exist_ok=True)  # Создаем папку, если её не
 app.mount("/images", StaticFiles(directory=str(images_dir)), name="images")
 
 
+# ===== Helper functions =====
+
+async def enrich_events_with_user_actions(
+    events: List[EventResponse],
+    user_id: Optional[str],
+    db: AsyncIOMotorDatabase
+) -> List[EventResponse]:
+    """Добавляет информацию о действиях пользователя к событиям."""
+    if not user_id or not events:
+        return events
+    
+    # Получаем все действия пользователя за один запрос
+    event_ids = [event.id for event in events]
+    user_actions_cursor = db.user_actions.find({
+        "user_id": user_id,
+        "event_id": {"$in": event_ids}
+    })
+    
+    # Создаем словарь event_id -> список действий
+    actions_map = {}
+    async for action in user_actions_cursor:
+        event_id = action["event_id"]
+        if event_id not in actions_map:
+            actions_map[event_id] = []
+        actions_map[event_id].append(action["action"])
+    
+    # Добавляем user_actions к каждому событию
+    for event in events:
+        event.user_actions = actions_map.get(event.id, [])
+    
+    return events
+
+
 # ===== Lifecycle events =====
 
 @app.on_event("startup")
@@ -244,6 +277,10 @@ async def get_events(
         events = events[:limit]  # Удаляем лишний элемент
         raw_events = raw_events[:limit]
     
+    # Добавляем информацию о действиях пользователя
+    if current_user:
+        events = await enrich_events_with_user_actions(events, str(current_user.id), db)
+    
     # Генерация следующего курсора
     next_cursor = None
     if has_more and raw_events:
@@ -268,6 +305,7 @@ async def get_events(
 @app.get("/events/{event_id}", response_model=EventResponse)
 async def get_event(
     event_id: str,
+    current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncIOMotorDatabase = Depends(get_database)
 ):
     """Получение деталей мероприятия из коллекции processed_events."""
@@ -290,7 +328,15 @@ async def get_event(
     # Преобразуем processed_at из datetime в строку, если нужно
     if "processed_at" in event_data and isinstance(event_data["processed_at"], datetime):
         event_data["processed_at"] = event_data["processed_at"].isoformat()
-    return EventResponse(**event_data)
+    
+    event_response = EventResponse(**event_data)
+    
+    # Добавляем информацию о действии пользователя
+    if current_user:
+        enriched = await enrich_events_with_user_actions([event_response], str(current_user.id), db)
+        event_response = enriched[0]
+    
+    return event_response
 
 
 @app.get("/categories", response_model=List[str])

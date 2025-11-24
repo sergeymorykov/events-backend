@@ -224,7 +224,14 @@ async def get_events(
     ]).limit(limit + 1)
     
     events = []
+    raw_events = []  # Сохраняем оригинальные данные для курсора
     async for event_data in mongo_cursor:
+        # Сохраняем оригинальные данные для генерации курсора
+        raw_events.append({
+            "date": event_data["date"],
+            "_id": event_data["_id"]
+        })
+        
         event_data["id"] = str(event_data.pop("_id"))
         if "processed_at" in event_data and isinstance(event_data["processed_at"], datetime):
             event_data["processed_at"] = event_data["processed_at"].isoformat()
@@ -234,17 +241,26 @@ async def get_events(
     has_more = len(events) > limit
     if has_more:
         events = events[:limit]  # Удаляем лишний элемент
+        raw_events = raw_events[:limit]
     
     # Генерация следующего курсора
     next_cursor = None
-    if has_more and events:
-        last_event = events[-1]
-        cursor_str = f"{last_event.date}|{last_event.id}"
+    if has_more and raw_events:
+        last_raw = raw_events[-1]
+        cursor_str = f"{last_raw['date']}|{str(last_raw['_id'])}"
         next_cursor = base64.urlsafe_b64encode(cursor_str.encode('utf-8')).decode('utf-8')
+    
+    # Генерация предыдущего курсора
+    prev_cursor = None
+    if raw_events and cursor:  # Если есть события и это не первая страница
+        first_raw = raw_events[0]
+        cursor_str = f"{first_raw['date']}|{str(first_raw['_id'])}"
+        prev_cursor = base64.urlsafe_b64encode(cursor_str.encode('utf-8')).decode('utf-8')
     
     return PaginatedEventsResponse(
         items=events,
-        next_cursor=next_cursor
+        next_cursor=next_cursor,
+        prev_cursor=prev_cursor
     )
 
 

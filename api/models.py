@@ -152,4 +152,5 @@ class PaginatedEventsResponse(BaseModel):
     """Модель ответа с пагинированным списком мероприятий."""
     items: List[EventResponse]
     next_cursor: Optional[str] = None
+    prev_cursor: Optional[str] = None
 

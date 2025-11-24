@@ -292,6 +292,21 @@ async def get_event(
     return EventResponse(**event_data)
 
 
+@app.get("/categories", response_model=List[str])
+async def get_categories(
+    db: AsyncIOMotorDatabase = Depends(get_database)
+):
+    """Получение уникального списка категорий из всех мероприятий."""
+    # Используем distinct для получения уникальных категорий
+    categories = await db.processed_events.distinct("categories")
+    
+    # Удаляем пустые значения и сортируем
+    categories = [cat for cat in categories if cat]
+    categories.sort()
+    
+    return categories
+
+
 # ===== Действия с мероприятиями =====
 
 @app.post("/events/{event_id}/like", response_model=MessageResponse)

@@ -4,7 +4,7 @@ Pydantic модели и схемы для FastAPI приложения.
 
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Annotated
-from pydantic import BaseModel, EmailStr, Field, BeforeValidator
+from pydantic import BaseModel, EmailStr, Field, BeforeValidator, field_validator
 from bson import ObjectId
 
 
@@ -61,6 +61,12 @@ class EventBase(BaseModel):
     source_post_url: Optional[str] = None
     processed_at: Optional[datetime] = None
     raw_post_id: Optional[int] = None
+    
+    @field_validator('image_urls', 'categories', 'user_interests', mode='before')
+    @classmethod
+    def convert_none_to_list(cls, v):
+        """Преобразует None в пустой список."""
+        return v if v is not None else []
 
 
 class Event(EventBase):

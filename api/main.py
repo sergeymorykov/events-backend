@@ -189,14 +189,11 @@ async def get_events(
         if price_filter:
             filter_query["price.amount"] = price_filter
     
-    # Фильтр по дате (по умолчанию показываем только текущие и будущие события)
+    # Фильтр по дате (показываем все события, если не указаны конкретные даты)
     date_filter = {}
     
-    # Если date_from не указан, устанавливаем начало текущего дня
-    if not date_from:
-        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        date_filter["$gte"] = today_start
-    else:
+    # Применяем фильтр по дате только если явно указаны параметры
+    if date_from:
         date_filter["$gte"] = date_from.replace(tzinfo=None)
     
     if date_to:

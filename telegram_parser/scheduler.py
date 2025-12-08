@@ -95,7 +95,7 @@ class TelegramScheduler:
         except Exception as e:
             logger.error(f"❌ Ошибка в запланированном парсинге: {e}", exc_info=True)
     
-    def start(self, immediate: bool = True, interval_hours: int = 4):
+    async def start(self, immediate: bool = True, interval_hours: int = 4):
         """
         Запуск планировщика.
         
@@ -137,18 +137,23 @@ class TelegramScheduler:
         # Если нужен немедленный первый запуск
         if immediate:
             logger.info("▶️  Запуск первого парсинга...")
-            # Проверяем, первый ли это запуск
-            async def first_run_check():
-                is_first = await self._is_first_run()
-                await self.parse_job(is_first_run=is_first)
-            asyncio.create_task(first_run_check())
+            # Проверяем, первый ли это запуск, и запускаем немедленно
+            is_first = await self._is_first_run()
+            # Добавляем одноразовое задание с минимальной задержкой (0 секунд)
+            self.scheduler.add_job(
+                self.parse_job,
+                'date',  # Одноразовый запуск
+                id='parse_channels_immediate',
+                name='Немедленный парсинг',
+                kwargs={'is_first_run': is_first}
+            )
         
         logger.info("✅ Планировщик запущен и работает")
         logger.info(f"   Следующий запуск: через {interval_hours} часов")
         logger.info("   Нажмите Ctrl+C для остановки")
         logger.info("=" * 60)
     
-    def start_daily(self, hour: int = 9, minute: int = 0, immediate: bool = False):
+    async def start_daily(self, hour: int = 9, minute: int = 0, immediate: bool = False):
         """
         Запуск планировщика с ежедневным расписанием в конкретное время.
         
@@ -186,7 +191,16 @@ class TelegramScheduler:
         # Если нужен немедленный первый запуск
         if immediate:
             logger.info("▶️  Запуск первого парсинга...")
-            asyncio.create_task(self.parse_job())
+            # Проверяем, первый ли это запуск, и запускаем немедленно
+            is_first = await self._is_first_run()
+            # Добавляем одноразовое задание с минимальной задержкой
+            self.scheduler.add_job(
+                self.parse_job,
+                'date',  # Одноразовый запуск
+                id='parse_channels_immediate',
+                name='Немедленный парсинг',
+                kwargs={'is_first_run': is_first}
+            )
         
         logger.info("✅ Планировщик запущен и работает")
         logger.info(f"   Следующий запуск: {hour:02d}:{minute:02d}")
@@ -229,7 +243,7 @@ async def main():
         # Режим запуска
         # Первый запуск: парсинг за последние 3 месяца
         # Последующие запуски: каждые 4 часа, парсинг за последние 4 часа
-        scheduler.start(immediate=True, interval_hours=4)
+        await scheduler.start(immediate=True, interval_hours=4)
         
         # Вариант 2: Каждый день в 9:00 (без немедленного запуска)
         # scheduler.start_daily(hour=9, minute=0, immediate=False)

@@ -287,7 +287,7 @@
           # Режим запуска
           # Первый запуск: обработка всех необработанных постов
           # Последующие запуски: каждые 4 часа, обработка новых необработанных постов
-          scheduler.start(immediate=True, interval_hours=4)
+          await scheduler.start(immediate=True, interval_hours=4)
           
           # Запуск вечного цикла
           await scheduler.run_forever()

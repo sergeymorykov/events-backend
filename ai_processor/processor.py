@@ -99,6 +99,56 @@ class AIProcessor:
         
         logger.info("AI процессор инициализирован")
     
+    def _normalize_price(self, price: Optional[PriceInfo]) -> Optional[PriceInfo]:
+        """
+        Нормализация цены: если amount = 0 или отсутствует, возвращаем None.
+        
+        Args:
+            price: Объект цены от LLM
+            
+        Returns:
+            Нормализованная цена или None
+        """
+        if price is None:
+            return None
+        
+        # Если amount = 0 или None, считаем событие бесплатным
+        if price.amount is None or price.amount == 0:
+            return None
+        
+        return price
+    
+    def _normalize_date(self, date: Optional[str]) -> Optional[str]:
+        """
+        Нормализация даты: проверяем, что год корректный (текущий или следующий).
+        
+        Args:
+            date: Дата в ISO 8601 формате
+            
+        Returns:
+            Нормализованная дата или None
+        """
+        if not date:
+            return None
+        
+        try:
+            from datetime import datetime
+            parsed_date = datetime.fromisoformat(date.replace('Z', '+00:00'))
+            current_year = datetime.now().year
+            
+            # Если год явно неверный (слишком старый или слишком далекий будущий)
+            if parsed_date.year < current_year or parsed_date.year > current_year + 2:
+                logger.warning(
+                    f"Дата содержит некорректный год {parsed_date.year}. "
+                    f"Ожидается {current_year} или {current_year + 1}. "
+                    f"Возвращаем исходную дату."
+                )
+            
+            return date
+        except (ValueError, AttributeError) as e:
+            logger.warning(f"Не удалось распарсить дату '{date}': {e}")
+            return None
+    
     async def process_raw_post(self, raw_post: Dict[str, Any]) -> Optional[ProcessedEvent]:
         """
         Обработка одного сырого поста.
@@ -241,11 +291,16 @@ class AIProcessor:
                     'categories': [],
                     'user_interests': []
                 })()
+            
+            # Пост-обработка данных от LLM
+            normalized_price = self._normalize_price(llm_response.price)
+            normalized_date = self._normalize_date(llm_response.date)
+            
             processed_event = ProcessedEvent(
                 title=llm_response.title,
                 description=llm_response.description,
-                date=llm_response.date,
-                price=llm_response.price,
+                date=normalized_date,
+                price=normalized_price,
                 categories=llm_response.categories,
                 user_interests=llm_response.user_interests,
                 image_urls=valid_photo_paths if valid_photo_paths else None,

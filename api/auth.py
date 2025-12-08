@@ -1,5 +1,5 @@
 """
-Модуль авторизации: JWT, хеширование паролей, middleware.
+Модуль авторизации: JWT, middleware.
 """
 
 import os
@@ -8,7 +8,6 @@ from typing import Optional, List
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
-import bcrypt
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from api.database import get_database
 from api.models import User
@@ -20,20 +19,6 @@ ACCESS_TOKEN_EXPIRE_HOURS = 24
 
 # HTTP Bearer для извлечения токена
 security = HTTPBearer()
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Проверка пароля."""
-    return bcrypt.checkpw(
-        plain_password.encode("utf-8"),
-        hashed_password.encode("utf-8")
-    )
-
-def get_password_hash(password: str) -> str:
-    """Хеширование пароля."""
-    salt = bcrypt.gensalt()
-    hashed = bcrypt.hashpw(password.encode("utf-8"), salt)
-    return hashed.decode("utf-8")
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -50,31 +35,29 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
     return encoded_jwt
 
 
-async def get_user_by_email(email: str, db: AsyncIOMotorDatabase) -> Optional[User]:
-    """Получение пользователя по email."""
+async def get_user_by_nickname(nickname: str, db: AsyncIOMotorDatabase) -> Optional[User]:
+    """Получение пользователя по nickname."""
     from bson import ObjectId
-    user_data = await db.users.find_one({"email": email})
+    user_data = await db.users.find_one({"nickname": nickname})
     if user_data:
         user_data["_id"] = str(user_data["_id"])
         return User(**user_data)
     return None
 
 
-async def create_user(email: str, password: str, name: str, db: AsyncIOMotorDatabase) -> User:
+async def create_user(nickname: str, name: str, db: AsyncIOMotorDatabase) -> User:
     """Создание нового пользователя."""
     # Проверка существования пользователя
-    existing_user = await get_user_by_email(email, db)
+    existing_user = await get_user_by_nickname(nickname, db)
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Пользователь с таким email уже существует"
+            detail="Пользователь с таким nickname уже существует"
         )
     
     # Создание пользователя
-    password_hash = get_password_hash(password)
     user_data = {
-        "email": email,
-        "password_hash": password_hash,
+        "nickname": nickname,
         "name": name,
         "interests": [],
         "interest_scores": {}
@@ -85,15 +68,9 @@ async def create_user(email: str, password: str, name: str, db: AsyncIOMotorData
     return User(**user_data)
 
 
-async def authenticate_user(email: str, password: str, db: AsyncIOMotorDatabase) -> Optional[User]:
-    """Аутентификация пользователя."""
-    user = await get_user_by_email(email, db)
-    if not user:
-        return None
-    
-    if not verify_password(password, user.password_hash):
-        return None
-    
+async def authenticate_user(nickname: str, db: AsyncIOMotorDatabase) -> Optional[User]:
+    """Аутентификация пользователя по nickname."""
+    user = await get_user_by_nickname(nickname, db)
     return user
 
 
@@ -112,7 +89,8 @@ async def get_current_user(
         token = credentials.credentials
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id: str = payload.get("sub")
-        if user_id is None:
+        nickname: str = payload.get("nickname")
+        if user_id is None or nickname is None:
             raise credentials_exception
     except JWTError:
         raise credentials_exception

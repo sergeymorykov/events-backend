@@ -4,7 +4,7 @@ Pydantic модели и схемы для FastAPI приложения.
 
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Annotated
-from pydantic import BaseModel, EmailStr, Field, BeforeValidator, field_validator
+from pydantic import BaseModel, Field, BeforeValidator, field_validator
 from bson import ObjectId
 
 
@@ -23,14 +23,12 @@ PyObjectId = Annotated[str, BeforeValidator(validate_object_id)]
 
 class UserRegister(BaseModel):
     """Модель регистрации пользователя."""
-    email: EmailStr
-    password: str = Field(..., min_length=6, max_length=72, description="Пароль должен содержать 6-72 символов (и не более 72 байт)")
+    nickname: str = Field(..., min_length=3, max_length=20, pattern="^[a-zA-Z0-9_]+$", description="Никнейм (3-20 символов, только буквы, цифры и подчеркивание)")
     name: str = Field(..., min_length=1, max_length=100)
 
 class UserLogin(BaseModel):
     """Модель входа пользователя."""
-    email: EmailStr
-    password: str
+    nickname: str = Field(..., min_length=3, max_length=20)
 
 
 class Token(BaseModel):
@@ -112,8 +110,7 @@ class UserActionResponse(BaseModel):
 class User(BaseModel):
     """Модель пользователя (для внутреннего использования)."""
     id: PyObjectId = Field(default_factory=PyObjectId, alias="_id")
-    email: EmailStr
-    password_hash: str
+    nickname: str
     name: str
     interests: List[str] = Field(default_factory=list)
     interest_scores: Dict[str, float] = Field(default_factory=dict)
@@ -126,7 +123,7 @@ class User(BaseModel):
 class UserResponse(BaseModel):
     """Модель ответа с пользователем (без чувствительных данных)."""
     id: str
-    email: EmailStr
+    nickname: str
     name: str
     interests: List[str]
 

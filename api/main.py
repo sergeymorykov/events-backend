@@ -94,9 +94,12 @@ async def startup_event():
     """Инициализация при запуске."""
     await connect_to_mongo()
     
-    # Создание составного индекса для курсорной пагинации
+    # Создание индексов
     db = get_database()
+    # Индекс для курсорной пагинации событий
     await db.processed_events.create_index([("date", -1), ("_id", -1)])
+    # Уникальный индекс для nickname пользователей
+    await db.users.create_index("nickname", unique=True)
 
 
 @app.on_event("shutdown")
@@ -112,14 +115,13 @@ async def register(user_data: UserRegister, db: AsyncIOMotorDatabase = Depends(g
     """Регистрация нового пользователя."""
     try:
         user = await create_user(
-            email=user_data.email,
-            password=user_data.password,
+            nickname=user_data.nickname,
             name=user_data.name,
             db=db
         )
         return UserResponse(
             id=str(user.id),
-            email=user.email,
+            nickname=user.nickname,
             name=user.name,
             interests=user.interests
         )
@@ -135,18 +137,19 @@ async def register(user_data: UserRegister, db: AsyncIOMotorDatabase = Depends(g
 @app.post("/auth/login", response_model=Token)
 async def login(user_data: UserLogin, db: AsyncIOMotorDatabase = Depends(get_database)):
     """Вход пользователя и получение JWT токена."""
-    user = await authenticate_user(user_data.email, user_data.password, db)
+    user = await authenticate_user(user_data.nickname, db)
     
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Неверный email или пароль"
+            detail="Неверный nickname"
         )
     
-    # Создание токена с интересами в payload
+    # Создание токена с nickname и интересами в payload
     access_token = create_access_token(
         data={
             "sub": str(user.id),
+            "nickname": user.nickname,
             "interests": user.interests
         }
     )
@@ -186,17 +189,23 @@ async def get_events(
         if price_filter:
             filter_query["price.amount"] = price_filter
     
-    # Фильтр по дате
-    if date_from or date_to:
-        date_filter = {}
-        if date_from:
-            date_filter["$gte"] = date_from.replace(tzinfo=None)
-        if date_to:
-            date_filter["$lte"] = date_to.replace(tzinfo=None)
-        if date_filter:
-            filter_query["date"] = date_filter
+    # Фильтр по дате (по умолчанию показываем только текущие и будущие события)
+    date_filter = {}
     
-    # Фильтр по интересам пользователя
+    # Если date_from не указан, устанавливаем начало текущего дня
+    if not date_from:
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        date_filter["$gte"] = today_start
+    else:
+        date_filter["$gte"] = date_from.replace(tzinfo=None)
+    
+    if date_to:
+        date_filter["$lte"] = date_to.replace(tzinfo=None)
+    
+    if date_filter:
+        filter_query["date"] = date_filter
+    
+    # Проверка авторизации для for_my_interests (фильтр не применяется в БД, только ранжирование)
     user_scores = {}
     if for_my_interests:
         if not current_user:
@@ -204,13 +213,7 @@ async def get_events(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Требуется авторизация для фильтрации по интересам"
             )
-        user_interests = current_user.interests
-        if user_interests:
-            filter_query["$or"] = [
-                {"categories": {"$in": user_interests}},
-                {"user_interests": {"$in": user_interests}}
-            ]
-        # Сохраняем веса для ранжирования
+        # Сохраняем веса для ранжирования ПОСЛЕ извлечения страницы
         user_scores = current_user.interest_scores or {}
     
     # Декодирование курсора
@@ -671,7 +674,7 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
     """Получение информации о текущем пользователе."""
     return UserResponse(
         id=str(current_user.id),
-        email=current_user.email,
+        nickname=current_user.nickname,
         name=current_user.name,
         interests=current_user.interests
     )

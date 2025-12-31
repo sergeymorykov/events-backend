@@ -24,6 +24,11 @@ from .models import LLMResponse, PriceInfo
 logger = logging.getLogger(__name__)
 
 
+class InsufficientQuotaError(Exception):
+    """Исключение для ошибки нехватки квоты/токенов."""
+    pass
+
+
 class LLMHandler:
     """Обработчик запросов к различным LLM через OpenAI-совместимый API."""
     
@@ -114,6 +119,24 @@ class LLMHandler:
         return False
     
     @staticmethod
+    def _is_quota_exceeded_error(exc: Exception) -> bool:
+        """Проверка, является ли ошибка ошибкой превышения квоты."""
+        message = str(getattr(exc, "message", "")) or str(exc)
+        error_lower = message.lower()
+        
+        # Проверяем различные варианты сообщений о квоте
+        quota_keywords = [
+            "insufficient_quota",
+            "quota exceeded",
+            "quota_exceeded",
+            "out of quota",
+            "billing hard limit",
+            "exceeded your current quota"
+        ]
+        
+        return any(keyword in error_lower for keyword in quota_keywords)
+    
+    @staticmethod
     def _should_retry(exc: Exception) -> bool:
         """Проверка, нужно ли повторять запрос при ошибке."""
         # Не повторяем ошибки аутентификации - они не временные
@@ -164,8 +187,9 @@ class LLMHandler:
 Правила:
 - Если информация не найдена или не может быть логически выведена — используй null или []
 - Дата должна быть в формате ISO 8601 (например: "2025-11-23T19:00:00")
-- ВАЖНО: Текущий год — {current_year}. Если в тексте указана только дата без года (например, "15 декабря"), используй текущий год {current_year}. НЕ выдумывай другие годы!
-- Если дата события уже прошла в текущем году, используй следующий год ({current_year + 1})
+- ВАЖНО: Если в тексте/изображении указаны ТОЛЬКО день и месяц без года (например, "15 декабря"), используй ТЕКУЩИЙ год {current_year}
+- Если указан конкретный год в тексте — используй его точно как указано
+- Не пытайся угадывать или корректировать год — система автоматически скорректирует его на основе даты публикации поста
 - Цена: 
   * Если событие бесплатное (вход свободный, бесплатно, free и т.д.) — верни price: null
   * Если цена НЕ указана в тексте — верни price: null
@@ -191,7 +215,7 @@ class LLMHandler:
     def _build_user_prompt(
         self,
         post_text: str,
-        image_caption: Optional[str],
+        image_captions: Optional[List[str]],
         hashtags: List[str]
     ) -> str:
         """
@@ -199,7 +223,7 @@ class LLMHandler:
         
         Args:
             post_text: Текст поста
-            image_caption: Описание изображения
+            image_captions: Список описаний изображений (может быть несколько)
             hashtags: Хештеги поста
             
         Returns:
@@ -207,13 +231,25 @@ class LLMHandler:
         """
         prompt = f"Текст поста:\n{post_text}\n\n"
         
-        if image_caption:
-            prompt += f"Описание изображения:\n{image_caption}\n\n"
+        # Обработка ВСЕХ описаний изображений
+        if image_captions:
+            # Фильтруем None и пустые описания
+            valid_captions = [cap for cap in image_captions if cap]
+            
+            if len(valid_captions) == 1:
+                prompt += f"Описание изображения:\n{valid_captions[0]}\n\n"
+            elif len(valid_captions) > 1:
+                prompt += f"Описания изображений ({len(valid_captions)} шт.):\n"
+                for idx, caption in enumerate(valid_captions, 1):
+                    prompt += f"{idx}. {caption}\n"
+                prompt += "\n"
         
         if hashtags:
             prompt += f"Хештеги:\n{', '.join(hashtags)}\n\n"
         
-        prompt += "Проанализируй эту информацию и верни JSON согласно схеме."
+        prompt += """Проанализируй эту информацию и верни JSON согласно схеме.
+ВАЖНО: Если информация о дате есть ТОЛЬКО на изображении - это нормально, используй её!
+Если дата не найдена НИ в тексте, НИ на изображениях - укажи date: null."""
         
         return prompt
     
@@ -304,6 +340,17 @@ class LLMHandler:
                     return message.content or ""
                     
                 except Exception as exc:
+                    # Проверка на превышение квоты - критическая ошибка, требующая остановки
+                    if self._is_quota_exceeded_error(exc):
+                        logger.critical(
+                            f"❌ КРИТИЧЕСКАЯ ОШИБКА: Квота API исчерпана! "
+                            f"Необходимо пополнить баланс или проверить лимиты. "
+                            f"Ошибка: {exc}"
+                        )
+                        raise InsufficientQuotaError(
+                            f"API quota exceeded. Please check your billing and limits. Error: {exc}"
+                        ) from exc
+                    
                     # Проверка на rate limit - логируем отдельно и добавляем дополнительную задержку
                     if isinstance(exc, RateLimitError):
                         attempt_num = attempt.retry_state.attempt_number
@@ -356,7 +403,7 @@ class LLMHandler:
     async def generate_event_data(
         self,
         post_text: str,
-        image_caption: Optional[str],
+        image_captions: Optional[List[str]],
         hashtags: List[str],
         existing_categories: List[str],
         existing_interests: List[str],
@@ -367,18 +414,18 @@ class LLMHandler:
         
         Args:
             post_text: Текст поста
-            image_caption: Описание изображения
+            image_captions: Список описаний изображений (может быть несколько)
             hashtags: Хештеги
             existing_categories: Существующие категории в БД
             existing_interests: Существующие интересы в БД
-            image_base64: Изображение в base64 (опционально)
+            image_base64: Изображение в base64 (опционально, для vision моделей)
             
         Returns:
             Объект LLMResponse или None при ошибке
         """
         # Построение промптов
         system_prompt = self._build_system_prompt(existing_categories, existing_interests)
-        user_prompt = self._build_user_prompt(post_text, image_caption, hashtags)
+        user_prompt = self._build_user_prompt(post_text, image_captions, hashtags)
         
         messages = [
             {"role": "system", "content": system_prompt},

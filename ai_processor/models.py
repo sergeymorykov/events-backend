@@ -63,6 +63,7 @@ class RawPost(BaseModel):
     photo_url: Optional[str] = Field(None, description="[DEPRECATED] Старое поле, не использовать")
     hashtags: List[str] = Field(default_factory=list, description="Хештеги поста")
     post_id: Optional[int] = Field(None, description="ID поста")
+    message_date: Optional[datetime] = Field(None, description="Дата публикации поста в Telegram")
     
     class Config:
         """Конфигурация Pydantic модели."""

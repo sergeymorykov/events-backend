@@ -11,8 +11,9 @@ from telethon import TelegramClient
 
 from .models import RawPost, ProcessedEvent, PriceInfo
 from .image_handler import ImageHandler
-from .llm_handler import LLMHandler
+from .llm_handler import LLMHandler, InsufficientQuotaError
 from .db_handler import DatabaseHandler
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -118,23 +119,72 @@ class AIProcessor:
         
         return price
     
-    def _normalize_date(self, date: Optional[str]) -> Optional[str]:
+    def _normalize_date(
+        self, 
+        date: Optional[str], 
+        message_date: Optional[datetime] = None
+    ) -> Optional[str]:
         """
-        Нормализация даты: проверяем, что год корректный (текущий или следующий).
+        Нормализация даты: проверяем, что год корректный и дата не прошла.
+        Если год не указан или событие с текущим годом уже прошло, используем год из message_date.
         
         Args:
-            date: Дата в ISO 8601 формате
+            date: Дата события в ISO 8601 формате
+            message_date: Дата публикации поста в Telegram
             
         Returns:
-            Нормализованная дата или None
+            Нормализованная дата или None (если дата прошла)
         """
         if not date:
             return None
         
         try:
-            from datetime import datetime
-            parsed_date = datetime.fromisoformat(date.replace('Z', '+00:00'))
+            dt_str = date.replace('Z', '+00:00')
+            parsed_date = datetime.fromisoformat(dt_str)
+            if parsed_date.tzinfo is None:
+                parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+            else:
+                parsed_date = parsed_date.astimezone(timezone.utc)
             current_year = datetime.now().year
+            now = datetime.now(timezone.utc)
+            
+            # Если дата уже прошла и у нас есть message_date
+            if parsed_date < now and message_date:
+                # Проверяем, возможно LLM извлекла дату без года (только день и месяц)
+                # и использовала текущий год по умолчанию
+                if parsed_date.year == current_year:
+                    # Берем год из message_date
+                    message_year = message_date.year if isinstance(message_date, datetime) else current_year
+                    
+                    # Создаем новую дату с годом из message_date
+                    new_date = parsed_date.replace(year=message_year)
+                    
+                    # Если и с новым годом дата прошла, пробуем следующий год
+                    if new_date < now:
+                        new_date = new_date.replace(year=message_year + 1)
+                    
+                    # Проверяем, что новая дата разумна (не более чем на 2 года вперед)
+                    if new_date.year <= current_year + 2:
+                        logger.info(
+                            f"📅 Дата скорректирована: {parsed_date.strftime('%Y-%m-%d')} → "
+                            f"{new_date.strftime('%Y-%m-%d')} (использован год из message_date)"
+                        )
+                        return new_date.isoformat()
+                
+                # Если дата все еще в прошлом - отфильтровываем
+                logger.warning(
+                    f"⚠️  Дата события уже прошла: {parsed_date.strftime('%Y-%m-%d %H:%M')}. "
+                    f"Событие будет отфильтровано."
+                )
+                return None
+            
+            # Проверка: дата уже прошла (без возможности коррекции)?
+            if parsed_date < now:
+                logger.warning(
+                    f"⚠️  Дата события уже прошла: {parsed_date.strftime('%Y-%m-%d %H:%M')}. "
+                    f"Событие будет отфильтровано."
+                )
+                return None
             
             # Если год явно неверный (слишком старый или слишком далекий будущий)
             if parsed_date.year < current_year or parsed_date.year > current_year + 2:
@@ -271,13 +321,14 @@ class AIProcessor:
             logger.info("  (изображение уже обработано/сгенерировано)")
             logger.info("=" * 60)
             
+            # Передаем ВСЕ описания изображений в LLM
             llm_response = await self.llm_handler.generate_event_data(
                 post_text=post.text,
-                image_caption=image_captions[0] if image_captions else None,
+                image_captions=image_captions if image_captions else None,
                 hashtags=post.hashtags,
                 existing_categories=existing_categories,
                 existing_interests=existing_interests,
-                image_base64=image_base64_list[0] if image_base64_list else None
+                image_base64=image_base64_list[0] if image_base64_list else None  # Пока передаем первое для vision
             )
             
             logger.info("✅ Данные события получены от LLM")
@@ -294,7 +345,18 @@ class AIProcessor:
             
             # Пост-обработка данных от LLM
             normalized_price = self._normalize_price(llm_response.price)
-            normalized_date = self._normalize_date(llm_response.date)
+            normalized_date = self._normalize_date(llm_response.date, post.message_date)
+            
+            # КРИТИЧНО: Отфильтровываем события без даты или с прошедшей датой
+            if not normalized_date:
+                logger.warning("=" * 60)
+                logger.warning("⚠️  СОБЫТИЕ ОТФИЛЬТРОВАНО")
+                logger.warning("   Причина: Дата отсутствует или уже прошла")
+                logger.warning(f"   Исходная дата от LLM: {llm_response.date}")
+                logger.warning(f"   Название: {llm_response.title}")
+                logger.warning("   Событие НЕ будет сохранено в БД")
+                logger.warning("=" * 60)
+                return None
             
             processed_event = ProcessedEvent(
                 title=llm_response.title,
@@ -408,6 +470,19 @@ class AIProcessor:
                     stats['errors'] += 1
                     logger.warning(f"⚠️  Пост {idx}/{total} обработан с ошибками (неполные данные)")
                     
+            except InsufficientQuotaError as e:
+                # Критическая ошибка квоты - останавливаем обработку
+                logger.critical("=" * 60)
+                logger.critical("❌ КРИТИЧЕСКАЯ ОШИБКА: КВОТА API ИСЧЕРПАНА")
+                logger.critical(f"   Ошибка: {e}")
+                logger.critical(f"   Обработано постов: {idx - 1}/{total}")
+                logger.critical("   Необходимо пополнить баланс API или проверить лимиты")
+                logger.critical("   Завершение работы процессора...")
+                logger.critical("=" * 60)
+                stats['errors'] += 1
+                # Прерываем цикл обработки
+                break
+                
             except Exception as e:
                 error_str = str(e)
                 # Проверяем, является ли ошибка rate limit

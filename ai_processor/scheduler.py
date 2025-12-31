@@ -9,6 +9,7 @@
   from datetime import datetime
   from pathlib import Path
   from apscheduler.schedulers.asyncio import AsyncIOScheduler
+  from apscheduler.triggers.cron import CronTrigger
   from apscheduler.triggers.interval import IntervalTrigger
 
   from telethon import TelegramClient
@@ -18,6 +19,7 @@
 
   from ai_processor import AIProcessor
   from ai_processor.config import AIConfig
+  from ai_processor.llm_handler import InsufficientQuotaError
 
   # Настройка логирования
   logging.basicConfig(
@@ -155,6 +157,24 @@
                   self.processor.close()
                   self.processor = None
               
+          except InsufficientQuotaError as e:
+              logger.critical("=" * 60)
+              logger.critical("❌ КРИТИЧЕСКАЯ ОШИБКА: КВОТА API ИСЧЕРПАНА")
+              logger.critical(f"   {e}")
+              logger.critical("   Остановка планировщика...")
+              logger.critical("=" * 60)
+              
+              # Закрытие процессора
+              if self.processor:
+                  try:
+                      self.processor.close()
+                  except:
+                      pass
+                  self.processor = None
+              
+              # Остановка планировщика при ошибке квоты
+              self.stop()
+              
           except Exception as e:
               logger.error(f"❌ Ошибка в запланированной обработке: {e}", exc_info=True)
               if self.processor:
@@ -164,7 +184,7 @@
                       pass
                   self.processor = None
       
-      def start(self, immediate: bool = True, interval_hours: int = 4):
+      async def start(self, immediate: bool = True, interval_hours: int = 4):
           """
           Запуск планировщика.
           
@@ -201,30 +221,87 @@
               kwargs={'is_first_run': False}
           )
           
-        # Запуск планировщика
-        self.scheduler.start()
-        
-        # Если нужен немедленный первый запуск
-        if immediate:
-            logger.info("▶️  Запуск первой обработки...")
-            # Добавляем одноразовую задачу для немедленного запуска
-            # Используем scheduler.add_job вместо asyncio.create_task
-            async def first_run_check():
-                is_first = await self._is_first_run()
-                await self.process_job(is_first_run=is_first)
-            
-            # Добавление одноразовой задачи с немедленным запуском
-            self.scheduler.add_job(
-                first_run_check,
-                id='first_run',
-                name='Первый запуск обработки',
-                replace_existing=True
-            )
-        
-        logger.info("✅ Планировщик запущен и работает")
-        logger.info(f"   Следующий запуск: через {interval_hours} часов")
-        logger.info("   Нажмите Ctrl+C для остановки")
-        logger.info("=" * 60)
+          # Запуск планировщика
+          self.scheduler.start()
+          
+          # Если нужен немедленный первый запуск
+          if immediate:
+              logger.info("▶️  Запуск первой обработки...")
+              # Проверяем, первый ли это запуск
+              is_first = await self._is_first_run()
+              
+              # Добавляем одноразовую задачу для немедленного запуска
+              self.scheduler.add_job(
+                  self.process_job,
+                  'date',  # Одноразовый запуск
+                  id='first_run',
+                  name='Первый запуск обработки',
+                  replace_existing=True,
+                  kwargs={'is_first_run': is_first}
+              )
+          
+          logger.info("✅ Планировщик запущен и работает")
+          logger.info(f"   Следующий запуск: через {interval_hours} часов")
+          logger.info("   Нажмите Ctrl+C для остановки")
+          logger.info("=" * 60)
+      
+      async def start_daily(self, hour: int = 9, minute: int = 0, immediate: bool = False):
+          """
+          Запуск планировщика с ежедневным расписанием в конкретное время.
+          
+          Args:
+              hour: Час запуска (0-23, по умолчанию 9)
+              minute: Минута запуска (0-59, по умолчанию 0)
+              immediate: Запустить обработку сразу при старте (по умолчанию False)
+          """
+          logger.info("=" * 60)
+          logger.info("🚀 ЗАПУСК ПЛАНИРОВЩИКА AI PROCESSOR (ЕЖЕДНЕВНО)")
+          logger.info("=" * 60)
+          
+          # Вывод конфигурации
+          AIConfig.print_config()
+          
+          logger.info(f"Первый запуск: обработка всех необработанных постов")
+          logger.info(f"Последующие запуски: обработка новых необработанных постов")
+          logger.info(f"⏰ Расписание: каждый день в {hour:02d}:{minute:02d}")
+          
+          if immediate:
+              logger.info("▶️  Первый запуск: сразу при старте")
+          
+          logger.info("=" * 60)
+          
+          # Добавление задачи с cron триггером
+          self.scheduler.add_job(
+              self.process_job,
+              trigger=CronTrigger(hour=hour, minute=minute),
+              id='process_posts_daily',
+              name='Ежедневная обработка постов через AI',
+              replace_existing=True
+          )
+          
+          # Запуск планировщика
+          self.scheduler.start()
+          
+          # Если нужен немедленный первый запуск
+          if immediate:
+              logger.info("▶️  Запуск первой обработки...")
+              # Проверяем, первый ли это запуск
+              is_first = await self._is_first_run()
+              
+              # Добавляем одноразовую задачу для немедленного запуска
+              self.scheduler.add_job(
+                  self.process_job,
+                  'date',  # Одноразовый запуск
+                  id='first_run',
+                  name='Первый запуск обработки',
+                  replace_existing=True,
+                  kwargs={'is_first_run': is_first}
+              )
+          
+          logger.info("✅ Планировщик запущен и работает")
+          logger.info(f"   Следующий запуск: {hour:02d}:{minute:02d}")
+          logger.info("   Нажмите Ctrl+C для остановки")
+          logger.info("=" * 60)
       
     def stop(self):
         """Остановка планировщика."""
@@ -289,9 +366,14 @@
           # Последующие запуски: каждые 4 часа, обработка новых необработанных постов
           await scheduler.start(immediate=True, interval_hours=4)
           
-          # Запуск вечного цикла
-          await scheduler.run_forever()
+          # Вариант 2: Каждый день в 9:00 (без немедленного запуска)
+          # await scheduler.start_daily(hour=9, minute=0, immediate=False)
           
+          # Вариант 3: Каждый день в 9:00 (с немедленным первым запуском)
+          # await scheduler.start_daily(hour=9, minute=0, immediate=True)
+          
+          # Вариант 4: Каждые 6 часов
+          # await scheduler.start(immediate=True, interval_hours=6)
       except KeyboardInterrupt:
           logger.info("Планировщик остановлен пользователем")
       except Exception as e:

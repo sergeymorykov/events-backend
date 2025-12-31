@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from ai_processor import AIProcessor
 from ai_processor.config import AIConfig
+from ai_processor.llm_handler import InsufficientQuotaError
 
 
 # Настройка логирования
@@ -45,7 +46,7 @@ async def main():
     is_valid, message = AIConfig.validate()
     if not is_valid:
         logger.error(f"Ошибка конфигурации: {message}")
-        return
+        return 1  # Exit code 1 для ошибки конфигурации
     
     if message:  # Предупреждения
         logger.warning(message)
@@ -77,6 +78,7 @@ async def main():
     
     # Инициализация AI процессора
     processor = None
+    exit_code = 0
     
     try:
         # Получение API ключей
@@ -110,10 +112,22 @@ async def main():
         logger.info(f"Обработано постов: {stats['success']}/{stats['total']}")
         logger.info("=" * 80)
         
+    except InsufficientQuotaError as e:
+        logger.critical("=" * 80)
+        logger.critical("❌ КРИТИЧЕСКАЯ ОШИБКА: КВОТА API ИСЧЕРПАНА")
+        logger.critical(f"   {e}")
+        logger.critical("   Необходимо пополнить баланс API или проверить лимиты")
+        logger.critical("=" * 80)
+        exit_code = 2  # Exit code 2 для ошибки квоты
+        
     except KeyboardInterrupt:
         logger.info("\nПрервано пользователем")
+        exit_code = 0  # Нормальное завершение по Ctrl+C
+        
     except Exception as e:
         logger.error(f"Критическая ошибка: {e}", exc_info=True)
+        exit_code = 1  # Exit code 1 для других ошибок
+        
     finally:
         # Закрытие соединений
         if processor:
@@ -125,11 +139,15 @@ async def main():
                 logger.info("Telegram клиент отключен")
             except Exception as e:
                 logger.error(f"Ошибка отключения Telegram: {e}")
+    
+    return exit_code
 
 
 if __name__ == '__main__':
     try:
-        asyncio.run(main())
+        exit_code = asyncio.run(main())
+        sys.exit(exit_code)
     except KeyboardInterrupt:
         logger.info("\nПрограмма остановлена")
+        sys.exit(0)
 

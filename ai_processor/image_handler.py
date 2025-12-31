@@ -372,101 +372,104 @@ class ImageHandler:
             logger.error(f"Ошибка генерации изображения через Kandinsky: {e}", exc_info=True)
             return None
     
+
     async def generate_image_llm(self, prompt: str, size: str = "1024x1024") -> Optional[str]:
         """
-        Генерация изображения через Google GenAI API (ZenMux).
+        Генерация изображения через OpenAI-совместимый API (Bothub/ZenMux).
         
         Args:
             prompt: Текстовый промпт для генерации
-            size: Размер изображения (не используется для Google GenAI, оставлен для совместимости)
+            size: Размер изображения (1024x1024, 512x512 и т.д.)
             
         Returns:
             Путь к сохраненному изображению или None при ошибке
         """
-        if not self._image_client or not self.image_llm_model:
-            logger.error("Google GenAI Image Generation не настроен")
+        if not self.image_llm_base_url or not self.image_llm_api_keys:
+            logger.error("LLM Image Generation не настроен (не указан base_url или API ключи)")
             return None
+
+        # Формируем корректный URL для генерации изображений
+        if self.image_llm_base_url.endswith('/'):
+            url = f"{self.image_llm_base_url}images/generations"
+        else:
+            url = f"{self.image_llm_base_url}/images/generations"
+        
+        # Выбираем текущий API ключ
+        api_key = self.image_llm_api_keys[self._current_image_key_idx]
+        
+        # Подготавливаем промпт
+        full_prompt = f"Сгенерируй изображение по описанию: {prompt[:2000]}"  # Ограничение длины
+        
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "prompt": full_prompt,
+            "n": 1,
+            "size": size,
+            "model": self.image_llm_model or "dall-e-3"  # Указываем модель явно
+        }
         
         try:
-            logger.info(f"Генерация изображения через {self.image_llm_model}...")
-            
-            # Ограничение длины промпта
-            truncated_prompt = prompt[:1000] if len(prompt) > 1000 else prompt
-            truncated_prompt = "Сгенерируй изображение по следующему описанию: " + truncated_prompt
-            
-            # Генерация изображения через Google GenAI (синхронный вызов в executor)
-            def _generate_sync():
-                response = self._image_client.models.generate_content(
-                    model=self.image_llm_model,
-                    contents=[truncated_prompt],
-                    config=types.GenerateContentConfig(
-                        response_modalities=["IMAGE"]
-                    )
-                )
-                return response
-            
-            # Выполняем синхронный вызов в executor для async/await
-            # Обрабатываем возможные проблемы с event loop
-            try:
-                response = await asyncio.to_thread(_generate_sync)
-            except RuntimeError as e:
-                if "Event loop is closed" in str(e):
-                    logger.warning("Event loop закрыт, генерация изображения прервана")
-                    return None
-                raise
-            
-            if not response or not response.parts:
-                logger.error("Не получено изображение от Google GenAI API")
-                return None
-            
-            # Обрабатываем части ответа (текст и изображение)
-            image_found = False
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"genai_generated_{timestamp}.png"
-            # Создаём абсолютный путь для сохранения
-            filepath = self.images_dir.resolve() / filename
-            
-            for part in response.parts:
-                if part.text is not None:
-                    logger.debug(f"Текстовая часть ответа: {part.text}")
-                elif part.inline_data is not None:
-                    # Сохраняем изображение
-                    image = part.as_image()
-                    filepath.parent.mkdir(parents=True, exist_ok=True)  # Убеждаемся, что директория существует
-                    image.save(str(filepath))
-                    image_found = True
-                    logger.info(f"Изображение сгенерировано через Google GenAI: {filepath}")
-                    break
-            
-            if not image_found:
-                logger.error("В ответе не найдено изображение")
-                return None
-            
-            # Возвращаем только имя файла (относительный путь от images_dir)
-            # Это соответствует формату, используемому в других методах
-            return filename
-                
-        except Exception as e:
-            logger.error(f"Ошибка генерации изображения через Google GenAI: {e}", exc_info=True)
-            # Попробуем следующий ключ, если есть
-            if len(self.image_llm_api_keys) > 1:
-                self._current_image_key_idx = (self._current_image_key_idx + 1) % len(self.image_llm_api_keys)
-                logger.info(f"Переключение на следующий API ключ (индекс {self._current_image_key_idx})")
-                try:
-                    self._image_client = genai.Client(
-                        api_key=self.image_llm_api_keys[self._current_image_key_idx],
-                        vertexai=True,
-                        http_options=types.HttpOptions(
-                            api_version='v1',
-                            base_url='https://zenmux.ai/api/vertex-ai'
-                        ),
-                    )
-                    # Рекурсивный вызов с новым ключом (только один раз)
-                    return await self.generate_image_llm(prompt, size)
-                except Exception as retry_error:
-                    logger.error(f"Ошибка при повторной попытке с новым ключом: {retry_error}")
+            logger.info(f"Отправка запроса на генерацию изображения к {url}")
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url, 
+                    json=payload, 
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as response:
+                    
+                    if response.status == 401:
+                        logger.error("Неверный API ключ для генерации изображений")
+                        # Переключаемся на следующий ключ
+                        if len(self.image_llm_api_keys) > 1:
+                            self._current_image_key_idx = (self._current_image_key_idx + 1) % len(self.image_llm_api_keys)
+                            logger.info(f"Переключение на ключ {self._current_image_key_idx + 1}")
+                            return await self.generate_image_llm(prompt, size)  # Рекурсивный retry
+                        return None
+                        
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Ошибка генерации изображения: {response.status} - {error_text}")
+                        return None
+                    
+                    # Обрабатываем ответ
+                    data = await response.json()
+                    
+                    # Проверяем формат ответа (OpenAI-совместимый)
+                    if "data" not in data or not data["data"]:
+                        logger.error("Некорректный ответ API: отсутствует data")
+                        return None
+                    
+                    image_url = data["data"][0].get("url")
+                    if not image_url:
+                        logger.error("В ответе отсутствует URL изображения")
+                        return None
+                    
+                    # Скачиваем изображение по URL
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"llm_generated_{timestamp}.png"
+                    filepath = self.images_dir.resolve() / filename
+                    
+                    # Скачивание через существующий метод
+                    local_path = await self.download_image_from_url(image_url)
+                    if local_path:
+                        # Возвращаем относительный путь (как в других методах)
+                        return os.path.relpath(local_path, self.images_dir)
+                    else:
+                        logger.error("Не удалось скачать сгенерированное изображение")
+                        return None
+                        
+        except asyncio.TimeoutError:
+            logger.error("Таймаут при генерации изображения")
             return None
-    
+        except Exception as e:
+            logger.error(f"Ошибка при генерации изображения через LLM API: {e}", exc_info=True)
+            return None
+
     async def generate_image(self, prompt: str) -> Optional[str]:
         """
         Универсальный метод генерации изображения.

@@ -98,6 +98,13 @@ async def startup_event():
     db = get_database()
     # Индекс для курсорной пагинации событий
     await db.processed_events.create_index([("date", -1), ("_id", -1)])
+    # Индекс для обратной сортировки (asc)
+    await db.processed_events.create_index([("date", 1), ("_id", 1)])
+    # Текстовый индекс для поиска по title
+    await db.processed_events.create_index(
+        [("title", "text")],
+        name="title_text_index"
+    )
     # Уникальный индекс для nickname пользователей
     await db.users.create_index("nickname", unique=True)
 
@@ -163,6 +170,8 @@ async def login(user_data: UserLogin, db: AsyncIOMotorDatabase = Depends(get_dat
 async def get_events(
     cursor: Optional[str] = Query(None, description="Курсор для пагинации (base64-закодированная строка)"),
     limit: int = Query(20, ge=1, le=50, description="Количество событий на страницу"),
+    search: Optional[str] = Query(None, description="Поиск по названию мероприятия"),
+    sort_date: str = Query("desc", pattern="^(asc|desc)$", description="Сортировка по дате: asc | desc"),
     categories: Optional[List[str]] = Query(None, description="Фильтр по категориям (можно указать несколько через запятую)"),
     min_price: Optional[int] = Query(None, description="Минимальная цена"),
     max_price: Optional[int] = Query(None, description="Максимальная цена"),
@@ -176,6 +185,10 @@ async def get_events(
     
     # Построение фильтра
     filter_query = {}
+    
+    # Поиск по title (MongoDB text search)
+    if search:
+        filter_query["$text"] = {"$search": search}
     
     if categories:
         filter_query["categories"] = {"$all": categories}
@@ -213,6 +226,9 @@ async def get_events(
         # Сохраняем веса для ранжирования ПОСЛЕ извлечения страницы
         user_scores = current_user.interest_scores or {}
     
+    # Определение направления сортировки
+    sort_direction = -1 if sort_date == "desc" else 1
+    
     # Декодирование курсора
     cursor_date = None
     cursor_id = None
@@ -231,21 +247,31 @@ async def get_events(
     
     # Добавление условия для курсорной пагинации
     if cursor_date and cursor_id:
-        cursor_condition = {
-            "$or": [
-                {"date": {"$lt": cursor_date}},
-                {"date": cursor_date, "_id": {"$lt": cursor_id}}
-            ]
-        }
+        # Логика курсора зависит от направления сортировки
+        if sort_direction == -1:  # desc - новые первые
+            cursor_condition = {
+                "$or": [
+                    {"date": {"$lt": cursor_date}},
+                    {"date": cursor_date, "_id": {"$lt": cursor_id}}
+                ]
+            }
+        else:  # asc - старые первые
+            cursor_condition = {
+                "$or": [
+                    {"date": {"$gt": cursor_date}},
+                    {"date": cursor_date, "_id": {"$gt": cursor_id}}
+                ]
+            }
+        
         if filter_query:
             filter_query = {"$and": [filter_query, cursor_condition]}
         else:
             filter_query = cursor_condition
     
-    # Запрос: сортировка ТОЛЬКО по дате и _id (для корректной пагинации)
+    # Запрос: сортировка по дате и _id (направление зависит от sort_date)
     mongo_cursor = db.processed_events.find(filter_query).sort([
-        ("date", -1),
-        ("_id", -1)
+        ("date", sort_direction),
+        ("_id", sort_direction)
     ]).limit(limit + 1)
     
     # Сбор данных в исходном порядке

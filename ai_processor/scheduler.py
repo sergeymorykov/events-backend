@@ -303,33 +303,33 @@ class AIProcessorScheduler:
         logger.info("   Нажмите Ctrl+C для остановки")
         logger.info("=" * 60)
     
-  def stop(self):
-      """Остановка планировщика."""
-      logger.info("Остановка планировщика...")
-      
-      # Закрытие процессора
-      if self.processor:
-          try:
-              self.processor.close()
-          except:
-              pass
-      
-      # Закрытие Telegram клиента
-      if self.telegram_client:
-          try:
-              # Получаем текущий event loop и создаём задачу на отключение
-              loop = asyncio.get_event_loop()
-              if loop.is_running():
-                  # Если loop работает, создаём задачу
-                  asyncio.ensure_future(self.telegram_client.disconnect())
-              else:
-                  # Если loop не работает, запускаем синхронно
-                  loop.run_until_complete(self.telegram_client.disconnect())
-          except Exception as e:
-              logger.warning(f"Не удалось отключить Telegram клиент: {e}")
-      
-      self.scheduler.shutdown()
-      logger.info("Планировщик остановлен")
+    def stop(self):
+        """Остановка планировщика."""
+        logger.info("Остановка планировщика...")
+        
+        # Закрытие процессора
+        if self.processor:
+            try:
+                self.processor.close()
+            except:
+                pass
+        
+        # Закрытие Telegram клиента
+        if self.telegram_client:
+            try:
+                # Получаем текущий event loop и создаём задачу на отключение
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Если loop работает, создаём задачу
+                    asyncio.ensure_future(self.telegram_client.disconnect())
+                else:
+                    # Если loop не работает, запускаем синхронно
+                    loop.run_until_complete(self.telegram_client.disconnect())
+            except Exception as e:
+                logger.warning(f"Не удалось отключить Telegram клиент: {e}")
+        
+        self.scheduler.shutdown()
+        logger.info("Планировщик остановлен")
     
     async def run_forever(self):
         """
@@ -343,6 +343,8 @@ class AIProcessorScheduler:
         except (KeyboardInterrupt, SystemExit):
             logger.info("\n⏹️  Получен сигнал остановки")
             self.stop()
+
+
 async def main():
     """Точка входа для запуска планировщика."""
     try:
@@ -376,5 +378,7 @@ async def main():
         logger.info("Планировщик остановлен пользователем")
     except Exception as e:
         logger.critical(f"Критическая ошибка: {e}", exc_info=True)
+
+
 if __name__ == '__main__':
     asyncio.run(main())

@@ -7,5 +7,7 @@ import asyncio
 from telegram_parser.scheduler import main
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()
 

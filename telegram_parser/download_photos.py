@@ -35,8 +35,8 @@ class PhotoDownloader:
     def __init__(self):
         """Инициализация загрузчика."""
         # Telegram API credentials
-        self.api_id = os.getenv('TELEGRAM_API_ID')
-        self.api_hash = os.getenv('TELEGRAM_API_HASH')
+        self.api_id = os.getenv('TG_API_ID')
+        self.api_hash = os.getenv('TG_API_HASH')
         self.session_name = os.getenv('TELEGRAM_SESSION_NAME', 'telegram_parser_session')
         
         # MongoDB credentials

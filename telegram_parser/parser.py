@@ -262,38 +262,48 @@ class TelegramParser:
             if original_channel and original_channel in self.channel_stats:
                 self.channel_stats[original_channel]['filtered_hashtags'] += 1
             return None  # Не сохраняем отфильтрованные посты
-        
+
         # Парсинг даты из текста
         event_date = self.date_parser.parse_date(text)
-        
-        # Если дата не найдена — фильтруем пост
-        if not event_date:
+
+        # Определяем статус даты
+        if event_date is None:
+            date_status = "unknown"
+            # Не фильтруем — сохраняем без даты
             text_preview = text[:100] + '...' if len(text) > 100 else text
-            logger.info(f"Пост {message.id}: дата не найдена | текст: {text_preview}")
-            self.stats['filtered_no_date'] += 1
+            logger.info(f"Пост {message.id}: дата не найдена, сохранён как 'unknown' | текст: {text_preview}")
+            self.stats['filtered_no_date'] += 1  # Можно оставить для статистики или завести отдельный счётчик
             if original_channel and original_channel in self.channel_stats:
                 self.channel_stats[original_channel]['filtered_no_date'] += 1
-            return None  # Не сохраняем посты без даты
-        
-        # Проверка, что дата в будущем или сегодня
-        if not self.date_parser.is_date_valid(event_date):
-            text_preview = text[:100] + '...' if len(text) > 100 else text
-            logger.info(f"Пост {message.id}: дата события в прошлом ({event_date.date()}) | текст: {text_preview}")
-            self.stats['filtered_date'] += 1
-            if original_channel and original_channel in self.channel_stats:
-                self.channel_stats[original_channel]['filtered_date'] += 1
-            return None  # Не сохраняем посты с датой в прошлом
-        
-        # Пост прошел все фильтры
+        else:
+            date_status = "parsed"
+            # Проверка, что дата в будущем или сегодня
+            if not self.date_parser.is_date_valid(event_date):
+                text_preview = text[:100] + '...' if len(text) > 100 else text
+                logger.info(f"Пост {message.id}: дата события в прошлом ({event_date.date()}) | текст: {text_preview}")
+                self.stats['filtered_date'] += 1
+                if original_channel and original_channel in self.channel_stats:
+                    self.channel_stats[original_channel]['filtered_date'] += 1
+                return None  # Отбрасываем только посты с датой в прошлом
+
+        # Пост прошел фильтры (или не содержит даты, но это допустимо)
         text_preview = text[:100] + '...' if len(text) > 100 else text
-        logger.info(f"✅ Пост {message.id} прошел фильтры | дата события: {event_date.date()} | хештеги: {hashtags} | текст: {text_preview}")
+        logger.info(
+            f"✅ Пост {message.id} прошел фильтры | "
+            f"статус даты: {date_status} | "
+            f"{'дата события: ' + str(event_date.date()) if event_date else 'дата отсутствует'} | "
+            f"хештеги: {hashtags} | текст: {text_preview}"
+        )
+
         # Скачиваем фото, если есть 
         photo_paths = await self._download_photos(message, channel_username)
+        
         post_data = {
             'post_id': message.id,
             'channel': channel_username,
             'text': text,
             'date_parsed': event_date,
+            'date_status': date_status,
             'hashtags': hashtags,
             'photo_urls': photo_paths,
             'photo_url': photo_paths[0] if photo_paths else None,  # deprecated

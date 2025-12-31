@@ -252,11 +252,7 @@ async def main():
         # scheduler.start_daily(hour=9, minute=0, immediate=True)
         
         # Вариант 4: Каждые 6 часов
-        # scheduler.start(immediate=True, interval_hours=6)
-        
-        # Запуск вечного цикла
-        await scheduler.run_forever()
-        
+        # scheduler.start(immediate=True, interval_hours=6)      
     except KeyboardInterrupt:
         logger.info("Планировщик остановлен пользователем")
     except Exception as e:

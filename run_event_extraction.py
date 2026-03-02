@@ -12,8 +12,16 @@ from openai import AsyncOpenAI
 from src.event_extraction import (
     PostProcessor,
     EventExtractionConfig,
-    ImageHandler
+    ImageHandler,
+    InsufficientQuotaError
 )
+from src.common.logging_utils import get_log_path
+
+# Для Windows-консоли с legacy-encoding избегаем падений логгера на unicode-символах
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # Настройка логирования
 logging.basicConfig(
@@ -21,7 +29,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('event_extraction.log')
+        logging.FileHandler(get_log_path('event_extraction.log'), encoding='utf-8')
     ]
 )
 
@@ -64,7 +72,7 @@ async def main():
         image_handler = ImageHandler(
             images_dir=EventExtractionConfig.IMAGES_DIR,
             image_llm_base_url=EventExtractionConfig.IMAGE_LLM_BASE_URL,
-            image_llm_api_keys=EventExtractionConfig.get_image_api_keys(),
+            image_llm_api_key=EventExtractionConfig.get_image_api_key(),
             image_llm_model=EventExtractionConfig.IMAGE_LLM_MODEL
         )
         
@@ -100,6 +108,14 @@ async def main():
         print("=" * 60)
         
         logger.info("✅ Обработка завершена успешно")
+    
+    except InsufficientQuotaError as e:
+        # Критическая ошибка квоты - завершаем с кодом 2
+        logger.critical("=" * 60)
+        logger.critical("❌ КРИТИЧЕСКАЯ ОШИБКА: API QUOTA EXCEEDED")
+        logger.critical("   Модуль event_extraction завершён")
+        logger.critical("=" * 60)
+        sys.exit(2)
     
     except KeyboardInterrupt:
         logger.info("⚠️  Обработка прервана пользователем")

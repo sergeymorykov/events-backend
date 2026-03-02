@@ -24,10 +24,12 @@ from .models import (
 
 from .config import EventExtractionConfig
 
-from .post_processor import (
-    PostProcessor,
+from .post_processor import PostProcessor
+
+from .exceptions import (
     PostProcessingError,
-    EventDeduplicationError
+    EventDeduplicationError,
+    InsufficientQuotaError
 )
 
 from .langgraph_agent import EventExtractionGraph
@@ -62,6 +64,7 @@ __all__ = [
     # Исключения
     "PostProcessingError",
     "EventDeduplicationError",
+    "InsufficientQuotaError",
 ]
 
 __version__ = "1.0.0"

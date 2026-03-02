@@ -1,0 +1,239 @@
+{
+  "dashboard": {
+    "title": "Event Extraction System",
+    "tags": ["events", "telegram", "ai"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 1,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Темп обработки постов (Event Extraction)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "targets": [
+          {
+            "expr": "rate(event_extraction_events_created_total[5m])",
+            "legendFormat": "Событий/сек",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "События/сек"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Ошибки Event Extraction по типам",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "targets": [
+          {
+            "expr": "rate(event_extraction_errors_total{type=\"quota\"}[5m])",
+            "legendFormat": "Quota Errors",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(event_extraction_errors_total{type=\"llm\"}[5m])",
+            "legendFormat": "LLM Errors",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(event_extraction_errors_total{type=\"dedup\"}[5m])",
+            "legendFormat": "Dedup Errors",
+            "refId": "C"
+          },
+          {
+            "expr": "rate(event_extraction_errors_total{type=\"processing\"}[5m])",
+            "legendFormat": "Processing Errors",
+            "refId": "D"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Ошибок/сек"},
+          {"format": "short"}
+        ],
+        "alert": {
+          "name": "Quota Exceeded Alert",
+          "conditions": [
+            {
+              "type": "query",
+              "query": {"params": ["A", "5m", "now"]},
+              "reducer": {"type": "last"},
+              "evaluator": {"type": "gt", "params": [0]}
+            }
+          ],
+          "executionErrorState": "alerting",
+          "for": "1m",
+          "frequency": "1m",
+          "message": "API quota exceeded! Необходимо пополнить баланс.",
+          "noDataState": "no_data"
+        }
+      },
+      {
+        "id": 3,
+        "title": "Новые необработанные посты",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 8},
+        "targets": [
+          {
+            "expr": "event_extraction_new_posts_pending",
+            "refId": "A"
+          }
+        ],
+        "sparkline": {"show": true},
+        "valueName": "current",
+        "format": "short",
+        "thresholds": "10,50",
+        "colors": ["#299c46", "#e5ac0e", "#e24d42"]
+      },
+      {
+        "id": 4,
+        "title": "Всего событий создано",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 8},
+        "targets": [
+          {
+            "expr": "event_extraction_events_created_total",
+            "refId": "A"
+          }
+        ],
+        "sparkline": {"show": true},
+        "valueName": "current",
+        "format": "short"
+      },
+      {
+        "id": 5,
+        "title": "Дубликаты найдено",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 8},
+        "targets": [
+          {
+            "expr": "event_extraction_duplicates_found_total",
+            "refId": "A"
+          }
+        ],
+        "sparkline": {"show": true},
+        "valueName": "current",
+        "format": "short"
+      },
+      {
+        "id": 6,
+        "title": "Афиши сгенерировано",
+        "type": "singlestat",
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 8},
+        "targets": [
+          {
+            "expr": "event_extraction_posters_generated_total",
+            "refId": "A"
+          }
+        ],
+        "sparkline": {"show": true},
+        "valueName": "current",
+        "format": "short"
+      },
+      {
+        "id": 7,
+        "title": "Время обработки поста (p95)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(event_extraction_duration_seconds_bucket[5m]))",
+            "legendFormat": "p95 обработка поста",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(event_extraction_duration_seconds_bucket[5m]))",
+            "legendFormat": "p50 обработка поста",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Время"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 8,
+        "title": "Время генерации афиши (p95)",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(event_extraction_poster_generation_seconds_bucket[5m]))",
+            "legendFormat": "p95 генерация",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(event_extraction_poster_generation_seconds_bucket[5m]))",
+            "legendFormat": "p50 генерация",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Время"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Telegram Parser - посты по каналам",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 20},
+        "targets": [
+          {
+            "expr": "rate(telegram_parser_posts_processed_total{status=\"saved\"}[5m])",
+            "legendFormat": "{{channel}} - saved",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(telegram_parser_posts_processed_total{status=\"filtered\"}[5m])",
+            "legendFormat": "{{channel}} - filtered",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Постов/сек"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 10,
+        "title": "LangGraph шаги - время выполнения",
+        "type": "graph",
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 20},
+        "targets": [
+          {
+            "expr": "event_extraction_langgraph_step_seconds{step=\"split\"}",
+            "legendFormat": "Split into events",
+            "refId": "A"
+          },
+          {
+            "expr": "event_extraction_langgraph_step_seconds{step=\"extract\"}",
+            "legendFormat": "Extract data",
+            "refId": "B"
+          },
+          {
+            "expr": "event_extraction_langgraph_step_seconds{step=\"images\"}",
+            "legendFormat": "Process images",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "Время"},
+          {"format": "short"}
+        ]
+      }
+    ],
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": ["10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]
+    }
+  }
+}

@@ -5,6 +5,7 @@
 import hashlib
 import logging
 import re
+from uuid import uuid4
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
@@ -186,11 +187,18 @@ class EventDeduplicator:
             if hash_results and hash_results[0]:
                 # Найден точный дубликат по хэшу
                 point = hash_results[0][0]
+                payload = point.payload or {}
+                original_event_id = payload.get("event_id")
+                if not original_event_id:
+                    logger.warning(
+                        "Найден дубликат по хэшу без event_id в payload, пропускаем дедупликацию"
+                    )
+                    return False, None
                 logger.info(
                     f"Найден дубликат по хэшу: {event.title[:50]} "
                     f"(hash={canonical_hash[:8]}...)"
                 )
-                return True, str(point.id)
+                return True, str(original_event_id)
             
             # Шаг 2: Семантический поиск
             search_results = self.client.search(
@@ -204,6 +212,13 @@ class EventDeduplicator:
             if search_results:
                 # Найдены семантически похожие события
                 best_match = search_results[0]
+                payload = best_match.payload or {}
+                original_event_id = payload.get("event_id")
+                if not original_event_id:
+                    logger.warning(
+                        "Найден семантический дубликат без event_id в payload, пропускаем дедупликацию"
+                    )
+                    return False, None
                 logger.info(
                     f"Найден семантический дубликат: {event.title[:50]} "
                     f"(score={best_match.score:.3f}, threshold={self.similarity_threshold})"
@@ -211,7 +226,7 @@ class EventDeduplicator:
                 logger.debug(
                     f"Оригинал: {best_match.payload.get('title', 'N/A')[:50]}"
                 )
-                return True, str(best_match.id)
+                return True, str(original_event_id)
             
             # Дубликатов не найдено
             return False, None
@@ -274,9 +289,12 @@ class EventDeduplicator:
                     payload["schedule_type"] = "fuzzy"
                     payload["schedule_description"] = event.schedule.description
             
+            # Qdrant принимает только uint или UUID в качестве point id
+            qdrant_point_id = str(uuid4())
+
             # Создание точки в Qdrant
             point = PointStruct(
-                id=event_id,
+                id=qdrant_point_id,
                 vector=embedding,
                 payload=payload
             )
@@ -286,7 +304,10 @@ class EventDeduplicator:
                 points=[point]
             )
             
-            logger.info(f"✅ Событие добавлено в Qdrant: {event.title[:50]} (id={event_id})")
+            logger.info(
+                f"✅ Событие добавлено в Qdrant: {event.title[:50]} "
+                f"(event_id={event_id}, point_id={qdrant_point_id})"
+            )
             return True
         
         except Exception as e:
@@ -309,18 +330,29 @@ class EventDeduplicator:
             Успех операции
         """
         try:
-            # Получение текущего payload
-            point = self.client.retrieve(
+            # Поиск точки в Qdrant по бизнес-идентификатору MongoDB
+            event_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="event_id",
+                        match=MatchValue(value=original_event_id)
+                    )
+                ]
+            )
+
+            scroll_result = self.client.scroll(
                 collection_name=self.collection_name,
-                ids=[original_event_id],
+                scroll_filter=event_filter,
+                limit=1,
                 with_payload=True
             )
-            
-            if not point:
+
+            if not scroll_result or not scroll_result[0]:
                 logger.error(f"Событие не найдено в Qdrant: {original_event_id}")
                 return False
-            
-            current_payload = point[0].payload
+
+            point = scroll_result[0][0]
+            current_payload = point.payload or {}
             
             # Добавление нового источника
             sources = current_payload.get("sources", [])
@@ -342,7 +374,7 @@ class EventDeduplicator:
                 self.client.set_payload(
                     collection_name=self.collection_name,
                     payload={"sources": sources},
-                    points=[original_event_id]
+                    points=[point.id]
                 )
                 
                 logger.info(

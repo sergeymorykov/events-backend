@@ -33,6 +33,7 @@ wheels/
 
 # Logs
 *.log
+logs/
 telegram_scheduler.log
 telegram_parser.log
 ai_processor.log
@@ -54,3 +55,6 @@ images/
 
 # AI Processor temp files
 *.tmp
+
+# Qdrant storage
+qdrant_storage

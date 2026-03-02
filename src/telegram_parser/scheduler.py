@@ -12,13 +12,14 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from .config import Config
 from .parser import TelegramParser
+from src.common.logging_utils import get_log_path
 
 # Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('telegram_scheduler.log', encoding='utf-8'),
+        logging.FileHandler(get_log_path('telegram_scheduler.log'), encoding='utf-8'),
         logging.StreamHandler()
     ]
 )

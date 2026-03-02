@@ -399,18 +399,31 @@ class EventExtractionGraph:
         
         try:
             # Запуск графа
-            result = await self.graph.ainvoke(initial_state)
+            raw_result = await self.graph.ainvoke(initial_state)
+
+            # LangGraph может вернуть dict; нормализуем результат к модели состояния
+            if isinstance(raw_result, ExtractionState):
+                result_state = raw_result
+            elif isinstance(raw_result, dict):
+                try:
+                    result_state = ExtractionState.model_validate(raw_result)
+                except Exception as e:
+                    logger.error(f"Некорректный формат состояния графа: {e}", exc_info=True)
+                    return []
+            else:
+                logger.error(f"Неожиданный тип результата графа: {type(raw_result).__name__}")
+                return []
             
             logger.info("=" * 60)
             logger.info("РЕЗУЛЬТАТ ИЗВЛЕЧЕНИЯ:")
-            logger.info(f"  Событий извлечено: {len(result.events)}")
-            logger.info(f"  Ошибок: {len(result.errors)}")
-            if result.errors:
-                for error in result.errors:
+            logger.info(f"  Событий извлечено: {len(result_state.events)}")
+            logger.info(f"  Ошибок: {len(result_state.errors)}")
+            if result_state.errors:
+                for error in result_state.errors:
                     logger.warning(f"    - {error}")
             logger.info("=" * 60)
             
-            return result.events
+            return result_state.events
         
         except Exception as e:
             logger.error(f"Критическая ошибка в графе: {e}", exc_info=True)

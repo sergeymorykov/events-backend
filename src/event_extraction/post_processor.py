@@ -3,6 +3,7 @@
 """
 
 import logging
+import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
@@ -14,18 +15,17 @@ from .models import RawPost, StructuredEvent
 from .langgraph_agent import EventExtractionGraph
 from .deduplicator import EventDeduplicator
 from .image_handler import ImageHandler
+from .exceptions import PostProcessingError, EventDeduplicationError, InsufficientQuotaError
 
 logger = logging.getLogger(__name__)
 
-
-class PostProcessingError(Exception):
-    """Исключение при ошибке обработки поста."""
-    pass
-
-
-class EventDeduplicationError(Exception):
-    """Исключение при ошибке дедупликации события."""
-    pass
+# Импорт метрик (ленивая инициализация)
+try:
+    from src.monitoring import get_event_metrics
+    METRICS_AVAILABLE = True
+except ImportError:
+    METRICS_AVAILABLE = False
+    logger.warning("Модуль мониторинга недоступен, метрики отключены")
 
 
 class PostProcessor:
@@ -204,6 +204,10 @@ class PostProcessor:
         Returns:
             Список извлечённых событий
         """
+        # Начало измерения времени
+        start_time = time.time()
+        metrics = get_event_metrics() if METRICS_AVAILABLE else None
+        
         try:
             # Валидация поста
             post = RawPost(**raw_post)
@@ -265,6 +269,10 @@ class PostProcessor:
                             f"(оригинал: {original_event_id})"
                         )
                         
+                        # Метрика дубликата
+                        if metrics:
+                            metrics.record_duplicate_found()
+                        
                         # Обновляем источники оригинального события
                         new_source = event.sources[0] if event.sources else None
                         if new_source:
@@ -290,6 +298,14 @@ class PostProcessor:
                         event_id = await self._save_event(event)
                         
                         if event_id:
+                            # Метрика созданного события
+                            if metrics:
+                                metrics.record_event_created()
+                            
+                            # Метрика сгенерированной афиши
+                            if event.poster_generated and metrics:
+                                metrics.record_poster_generated()
+                            
                             # Добавление в Qdrant для будущей дедупликации
                             await self.deduplicator.add_event_to_index(
                                 event, embedding, event_id
@@ -307,9 +323,24 @@ class PostProcessor:
             logger.info(f"ПОСТ ОБРАБОТАН: {len(saved_event_ids)} событий сохранено")
             logger.info("=" * 60)
             
+            # Запись времени обработки
+            duration = time.time() - start_time
+            if metrics:
+                metrics.processing_duration.observe(duration)
+            
             return events
         
+        except InsufficientQuotaError as e:
+            # Метрика квоты
+            if metrics:
+                metrics.record_error("quota")
+            raise
+        
         except Exception as e:
+            # Метрика общей ошибки
+            if metrics:
+                metrics.record_error("processing")
+            
             logger.error(f"Критическая ошибка обработки поста: {e}", exc_info=True)
             raise PostProcessingError(f"Ошибка обработки поста: {e}") from e
     
@@ -326,6 +357,9 @@ class PostProcessor:
         logger.info("=" * 60)
         logger.info("НАЧАЛО ПАКЕТНОЙ ОБРАБОТКИ ПОСТОВ")
         logger.info("=" * 60)
+        
+        # Получение метрик
+        metrics = get_event_metrics() if METRICS_AVAILABLE else None
         
         try:
             # Получение необработанных постов
@@ -362,6 +396,10 @@ class PostProcessor:
             total = len(raw_posts)
             logger.info(f"Найдено необработанных постов: {total}")
             
+            # Обновление метрики новых постов
+            if metrics:
+                metrics.set_pending_posts(total)
+            
             if total == 0:
                 return {"total": 0, "success": 0, "errors": 0, "events_extracted": 0}
             
@@ -380,6 +418,19 @@ class PostProcessor:
                     events = await self.process_post(raw_post)
                     stats["success"] += 1
                     stats["events_extracted"] += len(events)
+                
+                except InsufficientQuotaError as e:
+                    # Критическая ошибка - прерываем обработку
+                    logger.critical("=" * 60)
+                    logger.critical("❌ КРИТИЧЕСКАЯ ОШИБКА: API QUOTA EXCEEDED")
+                    logger.critical(f"   Ошибка: {e}")
+                    logger.critical(f"   Обработано постов: {idx - 1}/{total}")
+                    logger.critical("   Необходимо пополнить баланс API")
+                    logger.critical("   Прерывание обработки...")
+                    logger.critical("=" * 60)
+                    stats["errors"] += 1
+                    # Прерываем цикл и прокидываем ошибку выше
+                    raise
                 
                 except Exception as e:
                     logger.error(f"Ошибка обработки поста {idx}: {e}")

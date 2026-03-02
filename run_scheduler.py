@@ -4,7 +4,7 @@
 """
 
 import asyncio
-from telegram_parser.scheduler import main
+from src.telegram_parser.scheduler import main
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()

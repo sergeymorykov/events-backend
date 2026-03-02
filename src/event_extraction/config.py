@@ -4,7 +4,7 @@
 
 import os
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from dotenv import load_dotenv
 
 # Загрузка переменных окружения
@@ -50,20 +50,29 @@ class EventExtractionConfig:
     IMAGE_LLM_MODEL: str = os.getenv('IMAGE_LLM_MODEL', 'dall-e-3')
     
     @classmethod
-    def get_image_api_keys(cls) -> List[str]:
-        """Получение списка API ключей для генерации изображений."""
-        raw_keys = os.getenv('IMAGE_LLM_API_KEYS')
+    def get_image_api_key(cls) -> Optional[str]:
+        """
+        Получение одного API ключа для генерации изображений.
         
+        Returns:
+            API ключ или None
+        """
+        # Приоритет: IMAGE_LLM_API_KEY → первый из IMAGE_LLM_API_KEYS → первый из LLM ключей
+        single_key = os.getenv('IMAGE_LLM_API_KEY')
+        if single_key:
+            return single_key.strip()
+        
+        # Пробуем взять первый из IMAGE_LLM_API_KEYS
+        raw_keys = os.getenv('IMAGE_LLM_API_KEYS')
         if raw_keys:
-            api_keys: List[str] = []
             for chunk in re.split(r"[,\n;]", raw_keys):
                 trimmed = chunk.strip()
-                if trimmed and trimmed not in api_keys:
-                    api_keys.append(trimmed)
-            return api_keys
+                if trimmed:
+                    return trimmed
         
-        # Fallback на основные LLM ключи
-        return cls.get_api_keys()
+        # Fallback на первый LLM ключ
+        api_keys = cls.get_api_keys()
+        return api_keys[0] if api_keys else None
     
     # ===== Qdrant настройки =====
     QDRANT_HOST: str = os.getenv('QDRANT_HOST', 'localhost')
@@ -113,8 +122,8 @@ class EventExtractionConfig:
             return False, "LLM_MODEL_NAME должен быть указан"
         
         # Проверка настроек генерации изображений
-        image_keys = cls.get_image_api_keys()
-        if not image_keys or not cls.IMAGE_LLM_MODEL:
+        image_key = cls.get_image_api_key()
+        if not image_key or not cls.IMAGE_LLM_MODEL:
             warnings.append(
                 "ВНИМАНИЕ: Настройки генерации изображений неполные. "
                 "Генерация афиш может быть недоступна."
@@ -144,9 +153,9 @@ class EventExtractionConfig:
     def print_config(cls):
         """Вывод конфигурации (без секретов)."""
         api_keys = cls.get_api_keys()
-        image_keys = cls.get_image_api_keys()
+        image_key = cls.get_image_api_key()
         
-        print("=" * 60)
+        print("=" * 60) # separator
         print("КОНФИГУРАЦИЯ EVENT EXTRACTION:")
         print(f"  LLM Base URL: {cls.LLM_BASE_URL}")
         print(f"  LLM Model: {cls.LLM_MODEL_NAME}")
@@ -158,7 +167,7 @@ class EventExtractionConfig:
         print("  === Генерация изображений ===")
         print(f"  Image LLM Base URL: {cls.IMAGE_LLM_BASE_URL}")
         print(f"  Image LLM Model: {cls.IMAGE_LLM_MODEL}")
-        print(f"  Image API Keys: {len(image_keys)} ключ(ей)")
+        print(f"  Image API Key: {'✓ установлен' if image_key else '✗ не установлен'}")
         print()
         print("  === Qdrant ===")
         print(f"  Host: {cls.QDRANT_HOST}:{cls.QDRANT_PORT}")

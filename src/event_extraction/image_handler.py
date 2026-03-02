@@ -1,18 +1,17 @@
 """
 Модуль для работы с изображениями событий.
 Генерация афиш только через LLM API (Bothub/ZenMux).
+Изображения из Telegram уже загружены парсером в images/.
 """
 
-import os
 import asyncio
 import logging
 import base64
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 from datetime import datetime
 
 import aiohttp
-from telethon import TelegramClient
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +23,8 @@ class ImageHandler:
         self,
         images_dir: str = "images",
         image_llm_base_url: Optional[str] = None,
-        image_llm_api_keys: Optional[List[str]] = None,
-        image_llm_model: Optional[str] = None,
-        telegram_client: Optional[TelegramClient] = None
+        image_llm_api_key: Optional[str] = None,
+        image_llm_model: Optional[str] = None
     ):
         """
         Инициализация обработчика изображений.
@@ -34,27 +32,19 @@ class ImageHandler:
         Args:
             images_dir: Папка для сохранения изображений
             image_llm_base_url: Base URL для LLM image generation
-            image_llm_api_keys: Список API ключей для ротации
+            image_llm_api_key: API ключ для генерации изображений
             image_llm_model: Название модели (например: dall-e-3, flux-pro)
-            telegram_client: Клиент Telegram для скачивания фото
         """
         self.images_dir = Path(images_dir)
         self.images_dir.mkdir(exist_ok=True)
         
         # LLM Image Generation настройки
         self.image_llm_base_url = image_llm_base_url
-        self.image_llm_api_keys = image_llm_api_keys or []
+        self.image_llm_api_key = image_llm_api_key
         self.image_llm_model = image_llm_model or "dall-e-3"
-        self._current_image_key_idx = 0
         
-        # Telegram клиент
-        self.telegram_client = telegram_client
-        
-        if self.image_llm_base_url and self.image_llm_api_keys:
-            logger.info(
-                f"ImageHandler инициализирован: model={self.image_llm_model}, "
-                f"keys={len(self.image_llm_api_keys)}"
-            )
+        if self.image_llm_base_url and self.image_llm_api_key:
+            logger.info(f"ImageHandler инициализирован: model={self.image_llm_model}")
         else:
             logger.warning("ImageHandler: генерация изображений не настроена")
     
@@ -105,50 +95,6 @@ class ImageHandler:
             logger.error(f"Ошибка скачивания изображения: {e}", exc_info=True)
             return None
     
-    async def download_telegram_photo(self, photo_info: dict, message_id: int) -> Optional[str]:
-        """
-        Скачивание фото из Telegram через Telethon.
-        
-        Args:
-            photo_info: Информация о фото из raw_post
-            message_id: ID сообщения
-            
-        Returns:
-            Относительный путь к сохранённому файлу или None при ошибке
-        """
-        if not self.telegram_client:
-            logger.error("Telegram клиент не инициализирован")
-            return None
-        
-        if not photo_info:
-            return None
-        
-        try:
-            # Генерация имени файла
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"telegram_{message_id}_{timestamp}.jpg"
-            filepath = self.images_dir / filename
-            
-            # Скачивание через Telethon
-            await self.telegram_client.download_media(
-                photo_info,
-                file=str(filepath)
-            )
-            
-            # Проверка существования
-            if not filepath.exists():
-                logger.error(f"Файл не найден после скачивания: {filepath}")
-                return None
-            
-            # Возвращаем относительный путь
-            relative_path = str(filepath.relative_to(Path.cwd()))
-            logger.info(f"Фото из Telegram скачано: {relative_path}")
-            return relative_path
-            
-        except Exception as e:
-            logger.error(f"Ошибка скачивания фото из Telegram: {e}", exc_info=True)
-            return None
-    
     def image_to_base64(self, image_path: str) -> Optional[str]:
         """
         Конвертация изображения в base64.
@@ -186,20 +132,10 @@ class ImageHandler:
             logger.error(f"Ошибка конвертации изображения в base64: {e}", exc_info=True)
             return None
     
-    def _rotate_image_key(self) -> bool:
-        """Ротация API ключа при rate limit."""
-        if len(self.image_llm_api_keys) <= 1:
-            return False
-        
-        self._current_image_key_idx = (self._current_image_key_idx + 1) % len(self.image_llm_api_keys)
-        logger.warning(f"Переключение на следующий Image API ключ (index={self._current_image_key_idx})")
-        return True
-    
     async def generate_image(
         self,
         prompt: str,
-        size: str = "1024x1024",
-        max_retries: int = 2
+        size: str = "1024x1024"
     ) -> Optional[str]:
         """
         Генерация изображения через OpenAI-совместимый API (Bothub/ZenMux).
@@ -207,13 +143,12 @@ class ImageHandler:
         Args:
             prompt: Текстовый промпт для генерации
             size: Размер изображения (1024x1024, 512x512 и т.д.)
-            max_retries: Максимальное количество попыток с разными ключами
             
         Returns:
             Относительный путь к сохранённому изображению или None при ошибке
         """
-        if not self.image_llm_base_url or not self.image_llm_api_keys:
-            logger.error("LLM Image Generation не настроен (не указан base_url или API ключи)")
+        if not self.image_llm_base_url or not self.image_llm_api_key:
+            logger.error("LLM Image Generation не настроен (не указан base_url или API ключ)")
             return None
         
         # Формируем корректный URL
@@ -225,92 +160,71 @@ class ImageHandler:
         # Подготовка промпта
         full_prompt = f"Сгенерируй изображение по описанию: {prompt[:2000]}"
         
-        attempts = 0
-        initial_key_idx = self._current_image_key_idx
+        headers = {
+            "Authorization": f"Bearer {self.image_llm_api_key}",
+            "Content-Type": "application/json"
+        }
         
-        while attempts < max_retries:
-            api_key = self.image_llm_api_keys[self._current_image_key_idx]
-            
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "prompt": full_prompt,
-                "n": 1,
-                "size": size,
-                "model": self.image_llm_model
-            }
-            
-            try:
-                logger.info(f"Запрос генерации изображения (попытка {attempts + 1}/{max_retries})")
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        url,
-                        json=payload,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=60)
-                    ) as response:
-                        
-                        if response.status == 401:
-                            logger.error(f"Неверный API ключ для генерации изображений (401)")
-                            # Пробуем следующий ключ
-                            if self._rotate_image_key() and self._current_image_key_idx != initial_key_idx:
-                                attempts += 1
-                                await asyncio.sleep(1)
-                                continue
-                            return None
-                        
-                        if response.status == 429:
-                            logger.warning(f"Rate limit (429) при генерации изображения")
-                            # Пробуем следующий ключ
-                            if self._rotate_image_key() and self._current_image_key_idx != initial_key_idx:
-                                attempts += 1
-                                await asyncio.sleep(5)
-                                continue
-                            return None
-                        
-                        if response.status != 200:
-                            error_text = await response.text()
-                            logger.error(f"Ошибка генерации изображения: {response.status} - {error_text}")
-                            return None
-                        
-                        # Обработка ответа
-                        data = await response.json()
-                        
-                        # Проверка формата ответа (OpenAI-совместимый)
-                        if "data" not in data or not data["data"]:
-                            logger.error("Некорректный ответ API: отсутствует data")
-                            return None
-                        
-                        image_url = data["data"][0].get("url")
-                        if not image_url:
-                            logger.error("В ответе отсутствует URL изображения")
-                            return None
-                        
-                        # Скачиваем изображение
-                        logger.info(f"Скачивание сгенерированного изображения: {image_url[:50]}...")
-                        local_path = await self.download_image_from_url(image_url)
-                        
-                        if local_path:
-                            logger.info(f"✅ Изображение сгенерировано и сохранено: {local_path}")
-                            return local_path
-                        else:
-                            logger.error("Не удалось скачать сгенерированное изображение")
-                            return None
-                            
-            except asyncio.TimeoutError:
-                logger.error(f"Таймаут при генерации изображения (попытка {attempts + 1})")
-                attempts += 1
-                if attempts < max_retries:
-                    await asyncio.sleep(5)
-            except Exception as e:
-                logger.error(f"Ошибка при генерации изображения: {e}", exc_info=True)
-                return None
+        payload = {
+            "prompt": full_prompt,
+            "n": 1,
+            "size": size,
+            "model": self.image_llm_model
+        }
         
-        logger.error(f"Не удалось сгенерировать изображение после {max_retries} попыток")
-        return None
+        try:
+            logger.info("Запрос генерации изображения")
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=60)
+                ) as response:
+                    
+                    if response.status == 401:
+                        logger.error("Неверный API ключ для генерации изображений (401)")
+                        return None
+                    
+                    if response.status == 429:
+                        logger.error("Rate limit (429) при генерации изображения")
+                        return None
+                    
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Ошибка генерации изображения: {response.status} - {error_text}")
+                        return None
+                    
+                    # Обработка ответа
+                    data = await response.json()
+                    
+                    # Проверка формата ответа (OpenAI-совместимый)
+                    if "data" not in data or not data["data"]:
+                        logger.error("Некорректный ответ API: отсутствует data")
+                        return None
+                    
+                    image_url = data["data"][0].get("url")
+                    if not image_url:
+                        logger.error("В ответе отсутствует URL изображения")
+                        return None
+                    
+                    # Скачиваем изображение
+                    logger.info(f"Скачивание сгенерированного изображения: {image_url[:50]}...")
+                    local_path = await self.download_image_from_url(image_url)
+                    
+                    if local_path:
+                        logger.info(f"✅ Изображение сгенерировано и сохранено: {local_path}")
+                        return local_path
+                    else:
+                        logger.error("Не удалось скачать сгенерированное изображение")
+                        return None
+                        
+        except asyncio.TimeoutError:
+            logger.error("Таймаут при генерации изображения")
+            return None
+        except Exception as e:
+            logger.error(f"Ошибка при генерации изображения: {e}", exc_info=True)
+            return None
     
     async def generate_event_poster(
         self,

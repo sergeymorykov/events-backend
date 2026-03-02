@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 from telethon import TelegramClient
 from telethon.tl.types import InputPhotoFileLocation
+from src.common.logging_utils import get_log_path
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -22,7 +23,7 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('download_photos.log', encoding='utf-8'),
+        logging.FileHandler(get_log_path('download_photos.log'), encoding='utf-8'),
         logging.StreamHandler()
     ]
 )

@@ -5,20 +5,17 @@
 
 import logging
 import sys
-from pathlib import Path
 
-from telegram_parser.config import Config
-from telegram_parser.parser import TelegramParser
-
-# Базовая директория проекта
-BASE_DIR = Path(__file__).resolve().parent.parent
+from .config import Config
+from .parser import TelegramParser
+from src.common.logging_utils import get_log_path
 
 # Логирование
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(BASE_DIR / 'telegram_parser.log', encoding='utf-8'),
+        logging.FileHandler(get_log_path('telegram_parser.log'), encoding='utf-8'),
         logging.StreamHandler()
     ]
 )

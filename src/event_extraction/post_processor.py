@@ -3,6 +3,7 @@
 """
 
 import logging
+import re
 import time
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -11,7 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from qdrant_client import QdrantClient
 from openai import AsyncOpenAI
 
-from .models import RawPost, StructuredEvent
+from .models import RawPost, StructuredEvent, WeightedInterest
 from .langgraph_agent import EventExtractionGraph
 from .deduplicator import EventDeduplicator
 from .image_handler import ImageHandler
@@ -40,7 +41,8 @@ class PostProcessor:
         db_name: str = "events_db",
         qdrant_collection: str = "events",
         llm_model: str = "gpt-4o",
-        similarity_threshold: float = 0.92
+        similarity_threshold_global: float = 0.92,
+        similarity_threshold_intra_post: float = 0.86
     ):
         """
         Инициализация процессора.
@@ -53,25 +55,32 @@ class PostProcessor:
             db_name: Название БД MongoDB
             qdrant_collection: Название коллекции Qdrant
             llm_model: Название LLM модели
-            similarity_threshold: Порог сходства для дедупликации
+            similarity_threshold_global: Порог сходства для межпостовой дедупликации
+            similarity_threshold_intra_post: Порог merge для событий внутри одного поста
         """
         self.db = db_client[db_name]
+        self.db_name = db_name
         self.llm_client = llm_client
+        self.similarity_threshold_intra_post = similarity_threshold_intra_post
         
         # Инициализация компонентов
         self.extraction_agent = EventExtractionGraph(
             llm_client=llm_client,
             image_handler=image_handler,
+            qdrant_client=qdrant_client,
             model_name=llm_model
         )
         
         self.deduplicator = EventDeduplicator(
             qdrant_client=qdrant_client,
             collection_name=qdrant_collection,
-            similarity_threshold=similarity_threshold
+            similarity_threshold=similarity_threshold_global
         )
         
-        logger.info("PostProcessor инициализирован")
+        logger.info(
+            f"PostProcessor инициализирован (MongoDB: db={self.db_name}, "
+            f"collections=raw_posts/events/processed_posts)"
+        )
     
     async def _is_post_processed(self, post_id: int, channel: str) -> bool:
         """
@@ -142,6 +151,206 @@ class PostProcessor:
         except Exception as e:
             logger.error(f"Ошибка получения эмбеддинга: {e}", exc_info=True)
             return None
+
+    @staticmethod
+    def _normalize_location_key(event: StructuredEvent) -> str:
+        raw_location = f"{event.location or ''} {event.address or ''}".strip().lower()
+        if not raw_location:
+            return ""
+        compact = re.sub(r"[^\w\s]", " ", raw_location)
+        compact = re.sub(r"\s+", " ", compact).strip()
+        return compact
+
+    @staticmethod
+    def _extract_event_datetime(event: StructuredEvent) -> Optional[datetime]:
+        if not event.schedule:
+            return None
+        if hasattr(event.schedule, "date_start"):
+            return event.schedule.date_start
+        if hasattr(event.schedule, "valid_from"):
+            return event.schedule.valid_from
+        if hasattr(event.schedule, "approximate_start"):
+            return event.schedule.approximate_start
+        return None
+
+    @staticmethod
+    def _is_time_close(event_left: StructuredEvent, event_right: StructuredEvent, tolerance_minutes: int = 60) -> bool:
+        left_dt = PostProcessor._extract_event_datetime(event_left)
+        right_dt = PostProcessor._extract_event_datetime(event_right)
+        if not left_dt or not right_dt:
+            return True
+        delta_seconds = abs((left_dt - right_dt).total_seconds())
+        return delta_seconds <= tolerance_minutes * 60
+
+    @staticmethod
+    def _cosine_similarity(vec_left: List[float], vec_right: List[float]) -> float:
+        if not vec_left or not vec_right or len(vec_left) != len(vec_right):
+            return 0.0
+        dot = sum(left * right for left, right in zip(vec_left, vec_right))
+        norm_left = sum(left * left for left in vec_left) ** 0.5
+        norm_right = sum(right * right for right in vec_right) ** 0.5
+        if norm_left == 0.0 or norm_right == 0.0:
+            return 0.0
+        return dot / (norm_left * norm_right)
+
+    @staticmethod
+    def _merge_weighted_interests(event_left: StructuredEvent, event_right: StructuredEvent) -> List[WeightedInterest]:
+        accumulator: Dict[str, float] = {}
+        for interest in event_left.interests + event_right.interests:
+            if not interest.name:
+                continue
+            accumulator[interest.name] = accumulator.get(interest.name, 0.0) + float(interest.weight)
+
+        total = sum(accumulator.values())
+        if total <= 0:
+            return []
+        return [
+            WeightedInterest(name=name, weight=round(weight / total, 4))
+            for name, weight in sorted(accumulator.items(), key=lambda item: item[1], reverse=True)
+        ]
+
+    @staticmethod
+    def _build_dedup_embedding_text(event: StructuredEvent, top_interests: int = 5) -> str:
+        top_weighted_interests = sorted(
+            event.interests,
+            key=lambda item: item.weight,
+            reverse=True
+        )[:top_interests]
+        interest_names = [item.name for item in top_weighted_interests if item.name]
+        categories = [category for category in event.categories if category]
+        parts = [
+            event.title or "",
+            event.description or "",
+            event.location or "",
+            event.address or "",
+            " ".join(categories),
+            " ".join(interest_names),
+            event.category_primary or "",
+            " ".join(event.category_secondary or []),
+        ]
+        return " ".join(part for part in parts if part).strip()
+
+    @staticmethod
+    def _normalize_image_paths(image_paths: Optional[List[Any]]) -> List[str]:
+        """Нормализует список путей изображений и удаляет дубликаты."""
+        if not image_paths:
+            return []
+
+        normalized: List[str] = []
+        seen = set()
+        for item in image_paths:
+            if not item:
+                continue
+            path = str(item).strip()
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            normalized.append(path)
+        return normalized
+
+    @classmethod
+    def _merge_events_pair(cls, base_event: StructuredEvent, candidate_event: StructuredEvent) -> StructuredEvent:
+        merged_description = base_event.description or ""
+        if candidate_event.description and len(candidate_event.description) > len(merged_description):
+            merged_description = candidate_event.description
+
+        merged_sources = []
+        seen_sources = set()
+        for source in base_event.sources + candidate_event.sources:
+            key = (source.channel, source.post_id)
+            if key in seen_sources:
+                continue
+            seen_sources.add(key)
+            merged_sources.append(source)
+
+        merged_images = []
+        seen_images = set()
+        for image in base_event.images + candidate_event.images:
+            if image in seen_images:
+                continue
+            seen_images.add(image)
+            merged_images.append(image)
+
+        merged_categories = []
+        seen_categories = set()
+        for category in base_event.categories + candidate_event.categories:
+            if category in seen_categories or not category:
+                continue
+            seen_categories.add(category)
+            merged_categories.append(category)
+
+        merged_secondary = []
+        seen_secondary = set()
+        for category in (base_event.category_secondary or []) + (candidate_event.category_secondary or []):
+            if category in seen_secondary or not category:
+                continue
+            seen_secondary.add(category)
+            merged_secondary.append(category)
+
+        merged_interests = cls._merge_weighted_interests(base_event, candidate_event)
+        merged_user_interests = [item.name for item in merged_interests]
+        merged_primary = base_event.category_primary or candidate_event.category_primary
+
+        return base_event.model_copy(
+            update={
+                "description": merged_description,
+                "sources": merged_sources,
+                "images": merged_images,
+                "categories": merged_categories,
+                "category_primary": merged_primary,
+                "category_secondary": merged_secondary,
+                "interests": merged_interests,
+                "user_interests": merged_user_interests,
+            }
+        )
+
+    async def merge_similar_events_within_post(self, events: List[StructuredEvent]) -> List[StructuredEvent]:
+        """Объединение схожих событий внутри одного поста до глобальной дедупликации."""
+        if len(events) < 2:
+            return events
+
+        dedup_texts = [self._build_dedup_embedding_text(event) for event in events]
+        embeddings = [await self._get_embedding(text) for text in dedup_texts]
+        merged_flags = [False] * len(events)
+        merged_events: List[StructuredEvent] = []
+        merged_pairs = 0
+
+        for index, event in enumerate(events):
+            if merged_flags[index]:
+                continue
+
+            current_event = event
+            for candidate_index in range(index + 1, len(events)):
+                if merged_flags[candidate_index]:
+                    continue
+                candidate_event = events[candidate_index]
+
+                if not self._is_time_close(current_event, candidate_event):
+                    continue
+
+                left_location = self._normalize_location_key(current_event)
+                right_location = self._normalize_location_key(candidate_event)
+                if left_location and right_location and left_location != right_location:
+                    continue
+
+                left_embedding = embeddings[index]
+                right_embedding = embeddings[candidate_index]
+                similarity = self._cosine_similarity(left_embedding or [], right_embedding or [])
+                if similarity < self.similarity_threshold_intra_post:
+                    continue
+
+                current_event = self._merge_events_pair(current_event, candidate_event)
+                merged_flags[candidate_index] = True
+                merged_pairs += 1
+
+            merged_events.append(current_event)
+
+        if merged_pairs:
+            logger.info(
+                f"Внутрипостовый merge: объединено пар={merged_pairs}, "
+                f"было={len(events)}, стало={len(merged_events)}"
+            )
+        return merged_events
     
     async def _save_event(self, event: StructuredEvent) -> Optional[str]:
         """
@@ -154,18 +363,43 @@ class PostProcessor:
             ID сохранённого события или None при ошибке
         """
         try:
+            # Гарантируем совместимость: user_interests синхронизирован с weighted interests
+            if event.interests:
+                event.user_interests = [item.name for item in event.interests if item.name]
+
+            # Гарантируем консистентный формат изображений перед сохранением
+            event.images = self._normalize_image_paths(event.images)
+
             # Подготовка документа
             event_dict = event.model_dump(mode='json')
             
             # Преобразование расписания
             if event.schedule:
                 event_dict["schedule"] = event.schedule.model_dump(mode='json')
+
+            # Гарантируем наличие поля images в документе
+            event_dict["images"] = self._normalize_image_paths(
+                event_dict.get("images") or event.images
+            )
             
-            # Сохранение
+            # Сохранение в коллекцию events
             result = await self.db.events.insert_one(event_dict)
+            inserted_id = result.inserted_id
+
+            # Защита от ложноположительного лога: проверяем, что документ реально записан
+            inserted_doc = await self.db.events.find_one({"_id": inserted_id}, {"_id": 1})
+            if not inserted_doc:
+                logger.error(
+                    "MongoDB insert_one вернул inserted_id, но документ не найден "
+                    f"(db={self.db_name}, collection=events, _id={inserted_id})"
+                )
+                return None
             
-            event_id = str(result.inserted_id)
-            logger.info(f"✅ Событие сохранено в MongoDB: {event.title[:50]} (id={event_id})")
+            event_id = str(inserted_id)
+            logger.info(
+                f"✅ Событие сохранено в MongoDB: {event.title[:50]} "
+                f"(db={self.db_name}, collection=events, id={event_id})"
+            )
             
             return event_id
         
@@ -221,11 +455,18 @@ class PostProcessor:
                 logger.info(f"Пост уже обработан, пропускаем")
                 return []
             
+            # Собираем изображения с поддержкой legacy-поля photo_url
+            source_images = self._normalize_image_paths(post.photo_urls)
+            if not source_images:
+                legacy_photo_url = raw_post.get("photo_url")
+                if legacy_photo_url:
+                    source_images = self._normalize_image_paths([legacy_photo_url])
+
             # Извлечение событий через LangGraph агент
             events = await self.extraction_agent.run_extraction_graph(
                 text=post.text,
                 message_date=post.message_date,
-                images=post.photo_urls or [],
+                images=source_images,
                 hashtags=post.hashtags,
                 channel=post.channel,
                 post_id=post.post_id
@@ -238,6 +479,8 @@ class PostProcessor:
                 return []
             
             logger.info(f"Извлечено событий: {len(events)}")
+            events = await self.merge_similar_events_within_post(events)
+            logger.info(f"После intra-post merge событий: {len(events)}")
             
             # Обработка каждого события
             saved_event_ids = []
@@ -247,7 +490,7 @@ class PostProcessor:
                 
                 try:
                     # Генерация эмбеддинга для дедупликации
-                    embedding_text = f"{event.title} {event.description or ''} {event.location or ''}"
+                    embedding_text = self._build_dedup_embedding_text(event)
                     embedding = await self._get_embedding(embedding_text)
                     
                     if not embedding:

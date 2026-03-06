@@ -7,6 +7,7 @@
 import asyncio
 import logging
 import base64
+import html
 from pathlib import Path
 from typing import Optional
 from datetime import datetime
@@ -71,7 +72,7 @@ class ImageHandler:
                     if extension not in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
                         extension = 'jpg'
                     filename = f"downloaded_{timestamp}.{extension}"
-                    filepath = self.images_dir / filename
+                    filepath = (self.images_dir / filename).resolve()
                     
                     # Сохранение файла
                     content = await response.read()
@@ -83,8 +84,13 @@ class ImageHandler:
                         logger.error(f"Файл не найден после скачивания: {filepath}")
                         return None
                     
-                    # Возвращаем относительный путь
-                    relative_path = str(filepath.relative_to(Path.cwd()))
+                    # Возвращаем путь относительно images_dir (совместимо с telegram_parser)
+                    images_root = self.images_dir.resolve()
+                    try:
+                        relative_path = str(filepath.relative_to(images_root))
+                    except ValueError:
+                        # Fallback на имя файла, если путь не удалось привести к images_dir
+                        relative_path = filepath.name
                     logger.info(f"Изображение скачано: {relative_path}")
                     return relative_path
                     
@@ -241,13 +247,72 @@ class ImageHandler:
         Returns:
             Относительный путь к сгенерированной афише или None при ошибке
         """
-        # Формируем промпт для генерации афиши
-        prompt = f"Создай яркую и привлекательную афишу для события: {event_title}."
-        
-        if event_description:
-            prompt += f" Описание: {event_description[:300]}"
-        
-        prompt += " Стиль: современный, яркий, с акцентом на название события."
-        
-        logger.info(f"Генерация афиши для события: {event_title[:50]}...")
-        return await self.generate_image(prompt, size="1024x1024")
+        title = (event_title or "Событие").strip() or "Событие"
+        description = (event_description or "").strip()
+        safe_description = description[:240]
+
+        logger.info(f"Генерация афиши для события: {title[:50]}...")
+
+        # 1) Основной промпт
+        primary_prompt = (
+            f"Создай яркую и привлекательную афишу для события: {title}. "
+            f"Описание: {safe_description}. "
+            "Стиль: современный, минималистичный, типографика, без людей."
+        )
+        poster_path = await self.generate_image(primary_prompt, size="1024x1024")
+        if poster_path:
+            return poster_path
+
+        # 2) Более безопасный fallback промпт при content policy / иных ошибках
+        safe_prompt = (
+            f"Создай нейтральный постер мероприятия с текстом заголовка: {title}. "
+            "Абстрактный фон, геометрические формы, без людей, без брендов, без логотипов."
+        )
+        poster_path = await self.generate_image(safe_prompt, size="1024x1024")
+        if poster_path:
+            return poster_path
+
+        # 3) Локальный fallback: SVG-постер, чтобы путь всегда был в events.images
+        return self._create_local_fallback_poster(title=title, description=safe_description)
+
+    def _create_local_fallback_poster(self, title: str, description: str) -> Optional[str]:
+        """
+        Создаёт локальный SVG-постер как последний fallback.
+        Возвращает путь относительно images_dir.
+        """
+        try:
+            generated_dir = (self.images_dir / "generated_fallback").resolve()
+            generated_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"fallback_{timestamp}.svg"
+            filepath = generated_dir / filename
+
+            safe_title = html.escape(title[:80] or "Событие")
+            safe_desc = html.escape(description[:180] or "Подробности появятся позже")
+            date_label = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+            svg_content = f"""<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0%" stop-color="#1f2937"/>
+    <stop offset="100%" stop-color="#111827"/>
+  </linearGradient>
+</defs>
+<rect width="1024" height="1024" fill="url(#bg)"/>
+<rect x="64" y="64" width="896" height="896" rx="36" fill="none" stroke="#374151" stroke-width="4"/>
+<text x="96" y="180" fill="#f9fafb" font-size="56" font-family="Arial, sans-serif" font-weight="700">{safe_title}</text>
+<text x="96" y="270" fill="#d1d5db" font-size="30" font-family="Arial, sans-serif">{safe_desc}</text>
+<text x="96" y="930" fill="#9ca3af" font-size="24" font-family="Arial, sans-serif">Автогенерация афиши • {date_label}</text>
+</svg>"""
+
+            with open(filepath, "w", encoding="utf-8") as file:
+                file.write(svg_content)
+
+            images_root = self.images_dir.resolve()
+            relative_path = str(filepath.relative_to(images_root))
+            logger.warning(f"Использован локальный fallback-постер: {relative_path}")
+            return relative_path
+        except Exception as error:
+            logger.error(f"Ошибка создания fallback-постера: {error}", exc_info=True)
+            return None

@@ -3,12 +3,14 @@ FastAPI приложение для MVP-сервиса мероприятий.
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, status, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from openai import AsyncOpenAI
+from qdrant_client import QdrantClient
 from bson import ObjectId
 import base64
 from api.database import connect_to_mongo, close_mongo_connection, get_database
@@ -30,6 +32,8 @@ from api.interest_service import (
     cancel_user_action_effect
 )
 from api.models import User
+from src.event_extraction.config import EventExtractionConfig
+from src.event_extraction.normalization import TagNormalizer
 
 app = FastAPI(
     title="Events API",
@@ -87,6 +91,90 @@ async def enrich_events_with_user_actions(
     return events
 
 
+def _coerce_to_datetime(value: Any) -> Optional[datetime]:
+    """Преобразует строку/дату в datetime, если это возможно."""
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_event_datetime(event_data: Dict[str, Any]) -> Optional[datetime]:
+    """Извлекает дату события из legacy/new форматов."""
+    direct_date = _coerce_to_datetime(event_data.get("date"))
+    if direct_date:
+        return direct_date
+
+    schedule = event_data.get("schedule") or {}
+    if isinstance(schedule, dict):
+        for key in ("date_start", "valid_from", "approximate_start"):
+            extracted = _coerce_to_datetime(schedule.get(key))
+            if extracted:
+                return extracted
+
+    processed_at = _coerce_to_datetime(event_data.get("processed_at"))
+    if processed_at:
+        return processed_at
+
+    return None
+
+
+def _serialize_nested_datetimes(value: Any) -> Any:
+    """Рекурсивно сериализует datetime в ISO-строки."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {key: _serialize_nested_datetimes(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_serialize_nested_datetimes(item) for item in value]
+    return value
+
+
+def _normalize_event_document(event_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Нормализует документ события из event_extraction под EventResponse API.
+    """
+    normalized = dict(event_data)
+
+    event_dt = _extract_event_datetime(normalized)
+    if event_dt and not normalized.get("date"):
+        normalized["date"] = event_dt.isoformat()
+
+    image_urls = normalized.get("image_urls")
+    if not image_urls and isinstance(normalized.get("images"), list):
+        normalized["image_urls"] = normalized.get("images", [])
+
+    if not normalized.get("source_post_url"):
+        sources = normalized.get("sources") or []
+        if isinstance(sources, list) and sources:
+            first_source = sources[0] or {}
+            if isinstance(first_source, dict):
+                normalized["source_post_url"] = first_source.get("post_url")
+
+    if normalized.get("raw_post_id") is None:
+        sources = normalized.get("sources") or []
+        if isinstance(sources, list) and sources:
+            first_source = sources[0] or {}
+            if isinstance(first_source, dict):
+                normalized["raw_post_id"] = first_source.get("post_id")
+
+    if not normalized.get("user_interests") and isinstance(normalized.get("interests"), list):
+        normalized["user_interests"] = [
+            item.get("name")
+            for item in normalized["interests"]
+            if isinstance(item, dict) and item.get("name")
+        ]
+
+    if isinstance(normalized.get("schedule"), dict):
+        normalized["schedule"] = _serialize_nested_datetimes(normalized["schedule"])
+
+    return normalized
+
+
 # ===== Lifecycle events =====
 
 @app.on_event("startup")
@@ -97,16 +185,42 @@ async def startup_event():
     # Создание индексов
     db = get_database()
     # Индекс для курсорной пагинации событий
-    await db.processed_events.create_index([("date", -1), ("_id", -1)])
+    await db.events.create_index([("date", -1), ("_id", -1)])
     # Индекс для обратной сортировки (asc)
-    await db.processed_events.create_index([("date", 1), ("_id", 1)])
+    await db.events.create_index([("date", 1), ("_id", 1)])
+    await db.events.create_index([("schedule.date_start", -1), ("_id", -1)])
+    await db.events.create_index([("schedule.date_start", 1), ("_id", 1)])
     # Текстовый индекс для поиска по title
-    await db.processed_events.create_index(
+    await db.events.create_index(
         [("title", "text")],
         name="title_text_index"
     )
     # Уникальный индекс для nickname пользователей
     await db.users.create_index("nickname", unique=True)
+
+    # Инициализация нормализатора тегов для фильтрации категорий через канонические ID.
+    app.state.tag_normalizer = None
+    try:
+        llm_keys = EventExtractionConfig.get_api_keys()
+        llm_client = None
+        if llm_keys:
+            llm_client = AsyncOpenAI(
+                base_url=EventExtractionConfig.LLM_BASE_URL,
+                api_key=llm_keys[0],
+            )
+        qdrant_client = QdrantClient(
+            host=EventExtractionConfig.QDRANT_HOST,
+            port=EventExtractionConfig.QDRANT_PORT,
+            api_key=EventExtractionConfig.QDRANT_API_KEY or None,
+        )
+        app.state.tag_normalizer = TagNormalizer(
+            llm_client=llm_client,
+            model_name=EventExtractionConfig.LLM_MODEL_NAME,
+            qdrant_client=qdrant_client,
+            vector_size=EventExtractionConfig.QDRANT_VECTOR_SIZE,
+        )
+    except Exception:
+        app.state.tag_normalizer = None
 
 
 @app.on_event("shutdown")
@@ -183,15 +297,34 @@ async def get_events(
 ):
     """Получение списка мероприятий с курсорной пагинацией и ранжированием по релевантности (при for_my_interests=True)."""
     
-    # Построение фильтра
-    filter_query = {}
+    # Построение базового фильтра (без даты/курсора)
+    base_filter_query: Dict[str, Any] = {}
     
     # Поиск по title (MongoDB text search)
     if search:
-        filter_query["$text"] = {"$search": search}
+        base_filter_query["$text"] = {"$search": search}
     
     if categories:
-        filter_query["categories"] = {"$all": categories}
+        category_ids: List[str] = []
+        normalizer = getattr(app.state, "tag_normalizer", None)
+        if normalizer:
+            for category in categories:
+                _, slug = await normalizer.resolve_tag(
+                    category,
+                    allow_llm_fallback=True,
+                    kind="category",
+                )
+                if slug:
+                    category_ids.append(slug)
+
+        if category_ids:
+            category_condition = {"category_ids": {"$all": category_ids}}
+            if base_filter_query:
+                base_filter_query = {"$and": [base_filter_query, category_condition]}
+            else:
+                base_filter_query = category_condition
+        else:
+            base_filter_query["categories"] = {"$all": categories}
     
     if min_price is not None or max_price is not None:
         price_filter = {}
@@ -200,20 +333,17 @@ async def get_events(
         if max_price is not None:
             price_filter["$lte"] = max_price
         if price_filter:
-            filter_query["price.amount"] = price_filter
+            base_filter_query["price.amount"] = price_filter
     
-    # Фильтр по дате (показываем все события, если не указаны конкретные даты)
-    date_filter = {}
+    # Фильтр по вычисленной дате события
+    event_date_filter: Dict[str, Any] = {}
     
     # Применяем фильтр по дате только если явно указаны параметры
     if date_from:
-        date_filter["$gte"] = date_from.replace(tzinfo=None)
+        event_date_filter["$gte"] = date_from.replace(tzinfo=None)
     
     if date_to:
-        date_filter["$lte"] = date_to.replace(tzinfo=None)
-    
-    if date_filter:
-        filter_query["date"] = date_filter
+        event_date_filter["$lte"] = date_to.replace(tzinfo=None)
     
     # Проверка авторизации для for_my_interests (фильтр не применяется в БД, только ранжирование)
     user_scores = {}
@@ -235,7 +365,8 @@ async def get_events(
     if cursor:
         try:
             decoded = base64.urlsafe_b64decode(cursor).decode('utf-8')
-            cursor_date, cursor_id_str = decoded.split('|')
+            cursor_date_str, cursor_id_str = decoded.split('|')
+            cursor_date = datetime.fromisoformat(cursor_date_str)
             if not ObjectId.is_valid(cursor_id_str):
                 raise ValueError("Invalid ObjectId in cursor")
             cursor_id = ObjectId(cursor_id_str)
@@ -245,34 +376,66 @@ async def get_events(
                 detail=f"Неверный формат курсора: {str(e)}"
             )
     
-    # Добавление условия для курсорной пагинации
+    # Стадии агрегации: нормализуем дату события в поле _event_date
+    event_date_expr: Dict[str, Any] = {
+        "$ifNull": [
+            {"$convert": {"input": "$date", "to": "date", "onError": None, "onNull": None}},
+            {
+                "$ifNull": [
+                    {"$convert": {"input": "$schedule.date_start", "to": "date", "onError": None, "onNull": None}},
+                    {
+                        "$ifNull": [
+                            {"$convert": {"input": "$schedule.valid_from", "to": "date", "onError": None, "onNull": None}},
+                            {
+                                "$ifNull": [
+                                    {"$convert": {"input": "$schedule.approximate_start", "to": "date", "onError": None, "onNull": None}},
+                                    {
+                                        "$ifNull": [
+                                            {"$convert": {"input": "$processed_at", "to": "date", "onError": None, "onNull": None}},
+                                            {"$toDate": "$_id"}
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+
+    pipeline: List[Dict[str, Any]] = []
+    if base_filter_query:
+        pipeline.append({"$match": base_filter_query})
+
+    pipeline.append({"$addFields": {"_event_date": event_date_expr}})
+
+    if event_date_filter:
+        pipeline.append({"$match": {"_event_date": event_date_filter}})
+
     if cursor_date and cursor_id:
-        # Логика курсора зависит от направления сортировки
         if sort_direction == -1:  # desc - новые первые
             cursor_condition = {
                 "$or": [
-                    {"date": {"$lt": cursor_date}},
-                    {"date": cursor_date, "_id": {"$lt": cursor_id}}
+                    {"_event_date": {"$lt": cursor_date}},
+                    {"_event_date": cursor_date, "_id": {"$lt": cursor_id}}
                 ]
             }
         else:  # asc - старые первые
             cursor_condition = {
                 "$or": [
-                    {"date": {"$gt": cursor_date}},
-                    {"date": cursor_date, "_id": {"$gt": cursor_id}}
+                    {"_event_date": {"$gt": cursor_date}},
+                    {"_event_date": cursor_date, "_id": {"$gt": cursor_id}}
                 ]
             }
-        
-        if filter_query:
-            filter_query = {"$and": [filter_query, cursor_condition]}
-        else:
-            filter_query = cursor_condition
-    
-    # Запрос: сортировка по дате и _id (направление зависит от sort_date)
-    mongo_cursor = db.processed_events.find(filter_query).sort([
-        ("date", sort_direction),
-        ("_id", sort_direction)
-    ]).limit(limit + 1)
+        pipeline.append({"$match": cursor_condition})
+
+    pipeline.extend([
+        {"$sort": {"_event_date": sort_direction, "_id": sort_direction}},
+        {"$limit": limit + 1}
+    ])
+
+    mongo_cursor = db.events.aggregate(pipeline)
     
     # Сбор данных в исходном порядке
     raw_events = []  # Для генерации курсоров (исходный порядок)
@@ -280,13 +443,16 @@ async def get_events(
     async for event_data in mongo_cursor:
         # Сохраняем исходные данные для курсора
         raw_events.append({
-            "date": event_data["date"],
+            "_event_date": event_data.get("_event_date"),
             "_id": event_data["_id"]
         })
-        
+
+        event_data.pop("_event_date", None)
+        event_data = _normalize_event_document(event_data)
+
         # Преобразуем в EventResponse
         event_data["id"] = str(event_data.pop("_id"))
-        if "processed_at" in event_data:
+        if "processed_at" in event_data and isinstance(event_data["processed_at"], datetime):
             event_data["processed_at"] = event_data["processed_at"].isoformat()
         events.append(EventResponse(**event_data))
     
@@ -300,12 +466,17 @@ async def get_events(
     if for_my_interests and user_scores and events:
         def calculate_relevance(event: EventResponse) -> float:
             score = 0.0
-            # Суммируем веса из categories
+            # Суммируем сигнал из категорий
             if event.categories:
                 for cat in event.categories:
                     score += user_scores.get(cat, 0)
-            # Суммируем веса из user_interests
-            if event.user_interests:
+
+            # Основной сигнал: weighted interests
+            if event.interests:
+                for interest in event.interests:
+                    score += user_scores.get(interest.name, 0) * float(interest.weight)
+            # Fallback для legacy-данных
+            elif event.user_interests:
                 for interest in event.user_interests:
                     score += user_scores.get(interest, 0)
             return score
@@ -327,13 +498,13 @@ async def get_events(
     next_cursor = None
     if has_more and raw_events:
         last_raw = raw_events[-1]  # Последний в исходном порядке
-        cursor_str = f"{last_raw['date']}|{str(last_raw['_id'])}"
+        cursor_str = f"{last_raw['_event_date'].isoformat()}|{str(last_raw['_id'])}"
         next_cursor = base64.urlsafe_b64encode(cursor_str.encode('utf-8')).decode('utf-8')
     
     prev_cursor = None
     if raw_events and cursor:  # Не первая страница
         first_raw = raw_events[0]  # Первый в исходном порядке
-        cursor_str = f"{first_raw['date']}|{str(first_raw['_id'])}"
+        cursor_str = f"{first_raw['_event_date'].isoformat()}|{str(first_raw['_id'])}"
         prev_cursor = base64.urlsafe_b64encode(cursor_str.encode('utf-8')).decode('utf-8')
     
     return PaginatedEventsResponse(
@@ -349,14 +520,14 @@ async def get_event(
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncIOMotorDatabase = Depends(get_database)
 ):
-    """Получение деталей мероприятия из коллекции processed_events."""
+    """Получение деталей мероприятия из коллекции events."""
     if not ObjectId.is_valid(event_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Неверный формат ID мероприятия"
         )
     
-    event_data = await db.processed_events.find_one({"_id": ObjectId(event_id)})
+    event_data = await db.events.find_one({"_id": ObjectId(event_id)})
     
     if not event_data:
         raise HTTPException(
@@ -364,6 +535,8 @@ async def get_event(
             detail="Мероприятие не найдено"
         )
     
+    event_data = _normalize_event_document(event_data)
+
     # Переименовываем _id в id для корректной сериализации
     event_data["id"] = str(event_data.pop("_id"))
     # Преобразуем processed_at из datetime в строку, если нужно
@@ -386,7 +559,7 @@ async def get_categories(
 ):
     """Получение уникального списка категорий из всех мероприятий."""
     # Используем distinct для получения уникальных категорий
-    categories = await db.processed_events.distinct("categories")
+    categories = await db.events.distinct("categories")
     
     # Удаляем пустые значения и сортируем
     categories = [cat for cat in categories if cat]
@@ -411,7 +584,7 @@ async def like_event(
         )
     
     # Проверка существования мероприятия
-    event_data = await db.processed_events.find_one({"_id": ObjectId(event_id)})
+    event_data = await db.events.find_one({"_id": ObjectId(event_id)})
     if not event_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -472,7 +645,7 @@ async def dislike_event(
         )
     
     # Проверка существования мероприятия
-    event_data = await db.processed_events.find_one({"_id": ObjectId(event_id)})
+    event_data = await db.events.find_one({"_id": ObjectId(event_id)})
     if not event_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -533,7 +706,7 @@ async def participate_event(
         )
     
     # Проверка существования мероприятия
-    event_data = await db.processed_events.find_one({"_id": ObjectId(event_id)})
+    event_data = await db.events.find_one({"_id": ObjectId(event_id)})
     if not event_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -584,7 +757,7 @@ async def unlike_event(
         )
     
     # Проверка существования мероприятия
-    event_data = await db.processed_events.find_one({"_id": ObjectId(event_id)})
+    event_data = await db.events.find_one({"_id": ObjectId(event_id)})
     if not event_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -624,7 +797,7 @@ async def undislike_event(
         )
     
     # Проверка существования мероприятия
-    event_data = await db.processed_events.find_one({"_id": ObjectId(event_id)})
+    event_data = await db.events.find_one({"_id": ObjectId(event_id)})
     if not event_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -664,7 +837,7 @@ async def cancel_participation(
         )
     
     # Проверка существования мероприятия
-    event_data = await db.processed_events.find_one({"_id": ObjectId(event_id)})
+    event_data = await db.events.find_one({"_id": ObjectId(event_id)})
     if not event_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

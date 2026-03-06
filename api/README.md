@@ -115,9 +115,10 @@ Authorization: Bearer eyJ0eXAiOiJKV1QiLCJhbGc...
 
 Система автоматически обновляет интересы пользователя на основе действий:
 
-- **Лайк** → +1.0 к каждому тегу из `categories` и `user_interests`
-- **Дизлайк** → -0.8 к каждому тегу
-- **Участие** → +2.0 к каждому тегу
+- **Лайк** → +1.0 * `interest.weight` по каждому тегу события
+- **Дизлайк** → -0.8 * `interest.weight`
+- **Участие** → +2.0 * `interest.weight`
+- `categories` участвуют как дополнительный ослабленный сигнал
 
 Интересы пересчитываются автоматически: теги со score > 0.5 попадают в список `interests`.
 
@@ -225,26 +226,26 @@ api/
 }
 ```
 
-### processed_events
+### events
 ```json
 {
   "_id": ObjectId,
   "title": "Концерт",
   "description": "...",
-  "date": "2025-11-28T19:30:00",  // ISO 8601 строка
-  "price": {"amount": 1000, "currency": "RUB"},
+  "schedule": {
+    "type": "exact",
+    "date_start": "2026-03-10T19:00:00"
+  },
   "categories": ["концерт"],
+  "interests": [{"name": "музыка", "weight": 0.8}],
   "user_interests": ["музыка"],
-  "image_url": "...",  // DEPRECATED
-  "image_urls": ["..."],
-  "image_caption": "...",
-  "source_post_url": "...",
-  "processed_at": ISODate,
-  "raw_post_id": 12345
+  "images": ["-1002249249738/1595_5267149340231275172.jpg"],
+  "sources": [{"channel": "-1002249249738", "post_id": 1595, "post_url": "https://t.me/..."}],
+  "processed_at": "2026-03-02T13:12:37.317000"
 }
 ```
 
-**Важно:** API читает данные из коллекции `processed_events`, которая создается модулем `ai_processor`.
+**Важно:** API читает данные из коллекции `events`. Для совместимости ответа `GET /events` API нормализует поля: `date` извлекается из `schedule`, `image_urls` из `images`, `source_post_url`/`raw_post_id` из `sources[0]`.
 
 ### user_actions
 ```json

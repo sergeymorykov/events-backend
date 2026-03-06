@@ -81,8 +81,12 @@ poster_path = await handler.generate_event_poster(title, description)
     "schedule": ScheduleExact(date_start=datetime(...)),
     "location": "Казанская филармония",
     "price": PriceInfo(amount=500, currency="RUB"),
-    "categories": ["концерт", "музыка"],
-    "user_interests": ["классика"],
+    "categories": ["музыка"],
+    "interests": [
+        {"name": "музыка", "weight": 0.8},
+        {"name": "искусство", "weight": 0.2}
+    ],
+    "user_interests": ["музыка", "искусство"],  # legacy совместимость
     "images": ["poster.png"],
     "sources": [EventSource(channel="kazankay", post_id=123)]
 }
@@ -129,10 +133,14 @@ ScheduleFuzzy(
    - Генерация эмбеддинга
    - Проверка по хэшу (быстрый фильтр)
    - Векторный поиск в Qdrant
-4. **Сохранение**:
+4. **Канонизация и веса**:
+   - Канонизация `categories` и `interests[].name` через словарь алиасов
+   - Fallback-канонизация через LLM для неизвестных тегов
+   - Объединение дублей и нормализация весов interests
+5. **Сохранение**:
    - Если дубликат → обновление источников
    - Если новое → сохранение в MongoDB + Qdrant
-5. **Отметка поста**: запись в `processed_posts`
+6. **Отметка поста**: запись в `processed_posts`
 
 ## Конфигурация
 

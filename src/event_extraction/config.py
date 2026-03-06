@@ -80,7 +80,16 @@ class EventExtractionConfig:
     QDRANT_API_KEY: str = os.getenv('QDRANT_API_KEY', '')
     QDRANT_COLLECTION: str = os.getenv('QDRANT_COLLECTION', 'events')
     QDRANT_VECTOR_SIZE: int = int(os.getenv('QDRANT_VECTOR_SIZE', '1536'))  # OpenAI embeddings
-    QDRANT_SIMILARITY_THRESHOLD: float = float(os.getenv('QDRANT_SIMILARITY_THRESHOLD', '0.92'))
+    _QDRANT_SIMILARITY_THRESHOLD_GLOBAL_RAW: str = os.getenv(
+        'QDRANT_SIMILARITY_THRESHOLD_GLOBAL',
+        os.getenv('QDRANT_SIMILARITY_THRESHOLD', '0.92')
+    )
+    QDRANT_SIMILARITY_THRESHOLD_GLOBAL: float = float(_QDRANT_SIMILARITY_THRESHOLD_GLOBAL_RAW)
+    QDRANT_SIMILARITY_THRESHOLD_INTRA_POST: float = float(
+        os.getenv('QDRANT_SIMILARITY_THRESHOLD_INTRA_POST', '0.86')
+    )
+    # Backward compatibility со старым именем переменной.
+    QDRANT_SIMILARITY_THRESHOLD: float = QDRANT_SIMILARITY_THRESHOLD_GLOBAL
     
     # ===== MongoDB настройки =====
     MONGODB_URI: str = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
@@ -173,7 +182,8 @@ class EventExtractionConfig:
         print(f"  Host: {cls.QDRANT_HOST}:{cls.QDRANT_PORT}")
         print(f"  Collection: {cls.QDRANT_COLLECTION}")
         print(f"  Vector Size: {cls.QDRANT_VECTOR_SIZE}")
-        print(f"  Similarity Threshold: {cls.QDRANT_SIMILARITY_THRESHOLD}")
+        print(f"  Similarity Threshold (global): {cls.QDRANT_SIMILARITY_THRESHOLD_GLOBAL}")
+        print(f"  Similarity Threshold (intra-post): {cls.QDRANT_SIMILARITY_THRESHOLD_INTRA_POST}")
         print(f"  API Key: {'✓ установлен' if cls.QDRANT_API_KEY else '✗ не установлен'}")
         print()
         print(f"  Telegram API: {'✓ настроен' if cls.TG_API_ID else '✗ не настроен'}")

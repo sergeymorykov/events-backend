@@ -10,7 +10,7 @@ if __name__ == "__main__":
     # Загрузка переменных окружения из .env в папке api
     from dotenv import load_dotenv
     
-    env_path = Path(__file__).parent / "api" / ".env"
+    env_path = Path(__file__).parent / ".env"
     if env_path.exists():
         load_dotenv(env_path)
         print(f"✅ Загружены переменные окружения из {env_path}")

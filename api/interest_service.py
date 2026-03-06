@@ -2,7 +2,7 @@
 Сервис для обновления интересов пользователя на основе действий.
 """
 
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from api.models import Event
 
@@ -16,6 +16,65 @@ ACTION_WEIGHTS = {
 
 # Порог для включения интереса в список
 INTEREST_THRESHOLD = 0.5
+# Коэффициент влияния категорий относительно explicit interests
+CATEGORY_SIGNAL_WEIGHT = 0.35
+
+
+def build_event_tag_weights(event: Event) -> Dict[str, float]:
+    """
+    Сбор весов тегов события для обновления интересов пользователя.
+
+    Источники:
+    1) event.interests (основной weighted формат)
+    2) event.user_interests (legacy fallback)
+    3) event.categories (дополнительный ослабленный сигнал)
+    """
+    tag_weights: Dict[str, float] = {}
+
+    # Основной формат: weighted interests
+    if event.interests:
+        for item in event.interests:
+            name = (item.name or "").strip()
+            if not name:
+                continue
+            weight = float(item.weight or 0.0)
+            if weight <= 0:
+                continue
+            tag_weights[name] = tag_weights.get(name, 0.0) + weight
+
+    # Legacy fallback: если weighted отсутствуют
+    elif event.user_interests:
+        legacy = [tag.strip() for tag in event.user_interests if tag and tag.strip()]
+        if legacy:
+            uniform = 1.0 / len(legacy)
+            for tag in legacy:
+                tag_weights[tag] = tag_weights.get(tag, 0.0) + uniform
+
+    # Дополнительный сигнал от категорий
+    categories = [cat.strip() for cat in (event.categories or []) if cat and cat.strip()]
+    if categories:
+        per_category_weight = CATEGORY_SIGNAL_WEIGHT / len(categories)
+        for category in categories:
+            tag_weights[category] = tag_weights.get(category, 0.0) + per_category_weight
+
+    return tag_weights
+
+
+def apply_action_delta(
+    interest_scores: Dict[str, float],
+    tag_weights: Dict[str, float],
+    action_weight: float
+) -> Dict[str, float]:
+    """
+    Применение дельты действия к interest_scores по weighted тегам события.
+    """
+    updated = dict(interest_scores)
+    for tag, tag_weight in tag_weights.items():
+        if not tag:
+            continue
+        current_score = updated.get(tag, 0.0)
+        updated[tag] = current_score + (action_weight * tag_weight)
+    return updated
 
 
 async def update_user_interests(
@@ -47,18 +106,10 @@ async def update_user_interests(
     
     interest_scores: Dict[str, float] = user_data.get("interest_scores", {})
     
-    # Вес действия
+    # Взвешенное обновление интересов
     weight = ACTION_WEIGHTS.get(action, 0.0)
-    
-    # Получение всех тегов из мероприятия
-    tags = set(event.categories or [])
-    tags.update(event.user_interests or [])
-    
-    # Обновление scores для каждого тега
-    for tag in tags:
-        if tag:
-            current_score = interest_scores.get(tag, 0.0)
-            interest_scores[tag] = current_score + weight
+    tag_weights = build_event_tag_weights(event)
+    interest_scores = apply_action_delta(interest_scores, tag_weights, weight)
     
     # Пересчет interests на основе порога
     interests = [
@@ -188,24 +239,16 @@ async def update_user_interests_with_reversal(
     
     interest_scores: Dict[str, float] = user_data.get("interest_scores", {})
     
-    # Получение всех тегов из мероприятия
-    tags = set(event.categories or [])
-    tags.update(event.user_interests or [])
-    
+    tag_weights = build_event_tag_weights(event)
+
     # Сначала отменяем старое действие (если есть)
     if old_action and old_action in ACTION_WEIGHTS:
         old_weight = ACTION_WEIGHTS[old_action]
-        for tag in tags:
-            if tag:
-                current_score = interest_scores.get(tag, 0.0)
-                interest_scores[tag] = current_score - old_weight
+        interest_scores = apply_action_delta(interest_scores, tag_weights, -old_weight)
     
     # Затем применяем новое действие
     new_weight = ACTION_WEIGHTS.get(new_action, 0.0)
-    for tag in tags:
-        if tag:
-            current_score = interest_scores.get(tag, 0.0)
-            interest_scores[tag] = current_score + new_weight
+    interest_scores = apply_action_delta(interest_scores, tag_weights, new_weight)
     
     # Пересчет interests на основе порога
     interests = [
@@ -259,15 +302,9 @@ async def cancel_user_action_effect(
     # Вес действия (отрицательный для отмены)
     weight = ACTION_WEIGHTS.get(action, 0.0)
     
-    # Получение всех тегов из мероприятия
-    tags = set(event.categories or [])
-    tags.update(event.user_interests or [])
-    
-    # Отмена эффекта действия для каждого тега
-    for tag in tags:
-        if tag:
-            current_score = interest_scores.get(tag, 0.0)
-            interest_scores[tag] = current_score - weight  # Вычитаем вес действия
+    tag_weights = build_event_tag_weights(event)
+    # Вычитаем эффект действия
+    interest_scores = apply_action_delta(interest_scores, tag_weights, -weight)
     
     # Пересчет interests на основе порога
     interests = [

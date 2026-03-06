@@ -30,7 +30,7 @@
 
 1. Telegram-парсер (наполнить `raw_posts`)
    - `python run_parser.py`
-2. Event extraction (получить `processed_events`)
+2. Event extraction (получить `events`)
    - `python run_event_extraction.py`
 3. API для клиентов
    - `python run_api.py`
@@ -54,7 +54,7 @@
 - С лимитом постов: `python run_event_extraction.py 50`
 
 Выходные данные:
-- коллекция `processed_events`
+- коллекция `events`
 - отметки в `processed_posts`
 - сгенерированные файлы в `images/` (при включённой обработке изображений)
 
@@ -98,7 +98,7 @@
 - `401` на защищённых endpoint:
   - не передан `Authorization: Bearer <token>`
 - `500` при чтении событий:
-  - отсутствует/пустая коллекция `processed_events`
+  - отсутствует/пустая коллекция `events`
 - парсер не стартует:
   - не заполнены `TG_API_ID`, `TG_API_HASH`, `CHANNEL_USERNAME`
 - extraction падает на LLM:

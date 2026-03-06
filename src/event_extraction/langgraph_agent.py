@@ -9,6 +9,7 @@ from datetime import datetime
 
 from langgraph.graph import StateGraph, END
 from openai import AsyncOpenAI
+from qdrant_client import QdrantClient
 
 from .models import (
     ExtractionState,
@@ -17,9 +18,11 @@ from .models import (
     ScheduleRecurringWeekly,
     ScheduleFuzzy,
     PriceInfo,
-    EventSource
+    EventSource,
+    WeightedInterest
 )
 from .image_handler import ImageHandler
+from .normalization import TagNormalizer
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,7 @@ class EventExtractionGraph:
         self,
         llm_client: AsyncOpenAI,
         image_handler: ImageHandler,
+        qdrant_client: Optional[QdrantClient] = None,
         model_name: str = "gpt-4o",
         temperature: float = 0.7,
         max_tokens: int = 2000
@@ -50,6 +54,11 @@ class EventExtractionGraph:
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.normalizer = TagNormalizer(
+            llm_client=llm_client,
+            model_name=model_name,
+            qdrant_client=qdrant_client,
+        )
         
         # Инициализация графа
         self.graph = self._build_graph()
@@ -207,7 +216,11 @@ class EventExtractionGraph:
     "is_free": true/false
   }},
   "categories": ["категория1", "категория2"],
-  "user_interests": ["интерес1", "интерес2"]
+  "interests": [
+    {{"name": "интерес1", "weight": 0.6}},
+    {{"name": "интерес2", "weight": 0.4}}
+  ],
+  "user_interests": ["интерес1", "интерес2"]  // legacy fallback, если не удалось взвесить
 }}
 
 Правила:
@@ -217,7 +230,9 @@ class EventExtractionGraph:
 - Для расписания: exact (конкретная дата), recurring_weekly (по дням недели), fuzzy (нечёткое)
 - Цена: если бесплатно — is_free: true, amount: null
 - categories: тип события (концерт, выставка, фестиваль, спорт, театр)
-- user_interests: интересы аудитории (музыка, искусство, спорт, технологии)
+- interests: интересы аудитории с весом преобладания в контексте
+- Если interests не удаётся заполнить, верни user_interests как fallback
+- Для interests используй веса в диапазоне [0, 1], сумма весов должна быть около 1.0
 
 Ответь ТОЛЬКО валидным JSON, без дополнительного текста."""
         
@@ -280,10 +295,28 @@ class EventExtractionGraph:
                 price = None
                 if data.get("price"):
                     price_data = data["price"]
+                    raw_is_free = price_data.get("is_free")
+                    if isinstance(raw_is_free, bool):
+                        is_free = raw_is_free
+                    elif raw_is_free is None:
+                        is_free = False
+                    elif isinstance(raw_is_free, (int, float)):
+                        is_free = raw_is_free != 0
+                    else:
+                        is_free = str(raw_is_free).strip().lower() in {
+                            "true", "1", "yes", "да", "free", "бесплатно"
+                        }
+
+                    raw_amount = price_data.get("amount")
+                    amount = raw_amount if isinstance(raw_amount, int) else None
+                    if amount is None and isinstance(raw_amount, str):
+                        amount_digits = "".join(ch for ch in raw_amount if ch.isdigit())
+                        amount = int(amount_digits) if amount_digits else None
+
                     price = PriceInfo(
-                        amount=price_data.get("amount"),
+                        amount=amount,
                         currency=price_data.get("currency", "RUB"),
-                        is_free=price_data.get("is_free", False)
+                        is_free=is_free
                     )
                 
                 # Создание источника
@@ -292,6 +325,26 @@ class EventExtractionGraph:
                     post_id=state.post_id,
                     message_date=state.message_date
                 )
+
+                # Парсинг weighted interests с fallback на legacy user_interests
+                raw_weighted_interests = self._parse_weighted_interests(data)
+                weighted_interests, interest_ids = await self.normalizer.normalize_weighted_interests_with_ids(
+                    raw_weighted_interests
+                )
+                normalized_categories, category_ids = await self.normalizer.normalize_categories_with_ids(
+                    data.get("categories", [])
+                )
+                category_primary, category_secondary = self.normalizer.infer_category_hierarchy(
+                    normalized_categories
+                )
+
+                legacy_user_interests = [interest.name for interest in weighted_interests]
+                if not legacy_user_interests:
+                    legacy_user_interests = [
+                        str(item).strip()
+                        for item in (data.get("user_interests") or [])
+                        if item and str(item).strip()
+                    ]
                 
                 # Создание события
                 event = StructuredEvent(
@@ -301,8 +354,13 @@ class EventExtractionGraph:
                     address=data.get("address"),
                     schedule=schedule,
                     price=price,
-                    categories=data.get("categories", []),
-                    user_interests=data.get("user_interests", []),
+                    categories=normalized_categories,
+                    category_ids=category_ids,
+                    category_primary=category_primary,
+                    category_secondary=category_secondary,
+                    interests=weighted_interests,
+                    interest_ids=interest_ids,
+                    user_interests=legacy_user_interests,
                     sources=[source]
                 )
                 
@@ -315,6 +373,57 @@ class EventExtractionGraph:
         
         logger.info(f"Всего извлечено событий: {len(state.events)}")
         return state
+
+    @staticmethod
+    def _parse_weighted_interests(data: Dict[str, Any]) -> List[WeightedInterest]:
+        """
+        Парсинг interests из ответа LLM с fallback на legacy формат.
+        """
+        raw_interests = data.get("interests")
+        if isinstance(raw_interests, list):
+            parsed: List[WeightedInterest] = []
+            for item in raw_interests:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "")).strip()
+                if not name:
+                    continue
+                try:
+                    weight = float(item.get("weight", 0.0))
+                except (TypeError, ValueError):
+                    weight = 0.0
+
+                if weight < 0.0:
+                    weight = 0.0
+                if weight > 1.0:
+                    weight = 1.0
+
+                parsed.append(WeightedInterest(name=name, weight=weight))
+
+            total_weight = sum(interest.weight for interest in parsed)
+            if parsed and total_weight > 0:
+                return [
+                    WeightedInterest(
+                        name=interest.name,
+                        weight=round(interest.weight / total_weight, 4)
+                    )
+                    for interest in parsed
+                ]
+
+        # Fallback: преобразуем старый список user_interests в равновесный формат
+        legacy_items = [
+            str(item).strip()
+            for item in (data.get("user_interests") or [])
+            if item and str(item).strip()
+        ]
+        if not legacy_items:
+            return []
+
+        uniform_weight = round(1.0 / len(legacy_items), 4)
+        return [
+            WeightedInterest(name=name, weight=uniform_weight)
+            for name in legacy_items
+        ]
     
     async def _process_images(self, state: ExtractionState) -> ExtractionState:
         """
@@ -329,11 +438,18 @@ class EventExtractionGraph:
         logger.info("Шаг 3: Обработка изображений")
         state.current_step = "process_images"
         
+        normalized_state_images = [
+            str(path).strip()
+            for path in (state.images or [])
+            if path and str(path).strip()
+        ]
+
         # Если есть изображения в посте, используем их для всех событий
-        if state.images:
-            logger.info(f"Используем изображения из поста: {len(state.images)} шт.")
+        if normalized_state_images:
+            logger.info(f"Используем изображения из поста: {len(normalized_state_images)} шт.")
             for event in state.events:
-                event.images = state.images.copy()
+                event.images = normalized_state_images.copy()
+                event.poster_generated = False
         
         else:
             # Генерация афиш для событий без изображений
@@ -341,6 +457,11 @@ class EventExtractionGraph:
             
             for event in state.events:
                 try:
+                    event.images = [
+                        str(path).strip()
+                        for path in (event.images or [])
+                        if path and str(path).strip()
+                    ]
                     logger.info(f"Генерация афиши для: {event.title[:50]}")
                     poster_path = await self.image_handler.generate_event_poster(
                         event_title=event.title,
@@ -348,13 +469,15 @@ class EventExtractionGraph:
                     )
                     
                     if poster_path:
-                        event.images = [poster_path]
+                        event.images = [str(poster_path).strip()]
                         event.poster_generated = True
                         logger.info(f"✅ Афиша сгенерирована: {poster_path}")
                     else:
+                        event.poster_generated = False
                         logger.warning(f"⚠️  Не удалось сгенерировать афишу")
                 
                 except Exception as e:
+                    event.poster_generated = False
                     logger.error(f"Ошибка генерации афиши: {e}", exc_info=True)
                     state.errors.append(f"Ошибка генерации афиши: {e}")
         

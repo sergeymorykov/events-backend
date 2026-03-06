@@ -16,6 +16,7 @@ from .models import (
     ScheduleFuzzy,
     PriceInfo,
     EventSource,
+    WeightedInterest,
     ExtractionState,
     Category,
     UserInterest,
@@ -37,6 +38,8 @@ from .langgraph_agent import EventExtractionGraph
 from .deduplicator import EventDeduplicator
 
 from .image_handler import ImageHandler
+from .normalization import TagNormalizer
+from .tag_catalog import TagCatalogService
 
 __all__ = [
     # Модели
@@ -47,6 +50,7 @@ __all__ = [
     "ScheduleFuzzy",
     "PriceInfo",
     "EventSource",
+    "WeightedInterest",
     "ExtractionState",
     "Category",
     "UserInterest",
@@ -60,6 +64,8 @@ __all__ = [
     "EventExtractionGraph",
     "EventDeduplicator",
     "ImageHandler",
+    "TagNormalizer",
+    "TagCatalogService",
     
     # Исключения
     "PostProcessingError",

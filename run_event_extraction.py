@@ -86,7 +86,8 @@ async def main():
             db_name=EventExtractionConfig.MONGODB_DB_NAME,
             qdrant_collection=EventExtractionConfig.QDRANT_COLLECTION,
             llm_model=EventExtractionConfig.LLM_MODEL_NAME,
-            similarity_threshold=EventExtractionConfig.QDRANT_SIMILARITY_THRESHOLD
+            similarity_threshold_global=EventExtractionConfig.QDRANT_SIMILARITY_THRESHOLD_GLOBAL,
+            similarity_threshold_intra_post=EventExtractionConfig.QDRANT_SIMILARITY_THRESHOLD_INTRA_POST
         )
         
         # Обработка новых постов

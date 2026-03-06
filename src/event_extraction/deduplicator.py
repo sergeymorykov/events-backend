@@ -265,6 +265,13 @@ class EventDeduplicator:
                 "description": event.description or "",
                 "location": event.location or "",
                 "categories": event.categories,
+                "category_ids": event.category_ids,
+                "canonical_categories": event.categories,
+                "category_primary": event.category_primary or "",
+                "category_secondary": event.category_secondary,
+                "interests": [interest.model_dump(mode="json") for interest in event.interests],
+                "interest_ids": event.interest_ids,
+                "canonical_interests": [interest.name for interest in event.interests if interest.name],
                 "user_interests": event.user_interests,
                 "sources": [
                     {

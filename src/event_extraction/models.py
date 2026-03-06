@@ -69,6 +69,18 @@ class EventSource(BaseModel):
     message_date: Optional[datetime] = Field(None, description="Дата публикации поста")
 
 
+class WeightedInterest(BaseModel):
+    """Интерес с весом преобладания в контексте события."""
+    name: str = Field(..., description="Название интереса")
+    weight: float = Field(..., ge=0.0, le=1.0, description="Вес интереса от 0 до 1")
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Нормализация названия интереса."""
+        return v.strip()
+
+
 class StructuredEvent(BaseModel):
     """Структурированное событие после извлечения."""
     
@@ -91,6 +103,14 @@ class StructuredEvent(BaseModel):
     
     # Категории и интересы
     categories: List[str] = Field(default_factory=list, description="Категории события")
+    category_ids: List[str] = Field(default_factory=list, description="Канонические ID категорий")
+    category_primary: Optional[str] = Field(None, description="Основная категория верхнего уровня")
+    category_secondary: List[str] = Field(default_factory=list, description="Вторичные категории")
+    interests: List[WeightedInterest] = Field(
+        default_factory=list,
+        description="Интересы с весами (основное поле)"
+    )
+    interest_ids: List[str] = Field(default_factory=list, description="Канонические ID интересов")
     user_interests: List[str] = Field(default_factory=list, description="Интересы пользователей")
     
     # Изображения
@@ -105,11 +125,38 @@ class StructuredEvent(BaseModel):
     embedding_vector: Optional[List[float]] = Field(None, description="Вектор эмбеддинга для семантического поиска")
     processed_at: datetime = Field(default_factory=datetime.utcnow, description="Время обработки")
     
-    @field_validator('categories', 'user_interests')
+    @field_validator('categories', 'user_interests', 'category_secondary', 'category_ids', 'interest_ids')
     @classmethod
     def validate_lists(cls, v: List[str]) -> List[str]:
         """Удаление пустых строк из списков."""
         return [item.strip() for item in v if item and item.strip()]
+
+    @field_validator('category_primary')
+    @classmethod
+    def validate_primary_category(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        normalized = v.strip()
+        return normalized or None
+
+    @field_validator('interests', mode='before')
+    @classmethod
+    def normalize_interests(cls, v: Any) -> List[Dict[str, Any]] | Any:
+        """
+        Совместимость со старым форматом:
+        - ["музыка", "театр"] -> [{"name": "...", "weight": 0.5}, ...]
+        """
+        if v is None:
+            return []
+
+        if isinstance(v, list) and all(isinstance(item, str) for item in v):
+            raw_names = [item.strip() for item in v if item and item.strip()]
+            if not raw_names:
+                return []
+            uniform_weight = round(1.0 / len(raw_names), 4)
+            return [{"name": name, "weight": uniform_weight} for name in raw_names]
+
+        return v
 
 
 class RawPost(BaseModel):

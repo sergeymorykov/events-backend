@@ -4,17 +4,24 @@
 
 import pytest
 from datetime import datetime
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, AsyncMock, MagicMock
 
-from src.event_extraction.models import RawPost, StructuredEvent, EventSource, ScheduleExact
+from src.event_extraction.models import (
+    RawPost,
+    StructuredEvent,
+    EventSource,
+    ScheduleExact,
+    WeightedInterest,
+)
 from src.event_extraction.post_processor import PostProcessor
 
 
 @pytest.fixture
 def mock_clients():
     """Моки для клиентов."""
-    db_client = Mock()
-    qdrant_client = Mock()
+    db_client = MagicMock()
+    qdrant_client = MagicMock()
+    qdrant_client.get_collections.return_value = Mock(collections=[Mock(name="events")])
     llm_client = Mock()
     image_handler = Mock()
     
@@ -135,3 +142,46 @@ async def test_process_post_already_processed(mock_clients):
     
     # Пост уже обработан, должен вернуться пустой список
     assert events == []
+
+
+@pytest.mark.asyncio
+async def test_merge_similar_events_within_post_combines_duplicates():
+    """Схожие события внутри поста объединяются в одну карточку."""
+    processor = object.__new__(PostProcessor)
+    processor.similarity_threshold_intra_post = 0.85
+    processor._get_embedding = AsyncMock(side_effect=[[1.0, 0.0], [0.99, 0.01]])
+
+    schedule = ScheduleExact(date_start=datetime(2026, 3, 10, 19, 0))
+    event_left = StructuredEvent(
+        title="Фестиваль японской культуры",
+        description="Большой фестиваль с лекциями",
+        location="Центр культуры",
+        address="Кремлевская 1",
+        categories=["япония"],
+        category_primary="культура",
+        category_secondary=["япония"],
+        interests=[WeightedInterest(name="япония", weight=1.0)],
+        user_interests=["япония"],
+        schedule=schedule,
+        sources=[EventSource(channel="test", post_id=1)],
+    )
+    event_right = StructuredEvent(
+        title="Фестиваль восточной культуры",
+        description="Фестиваль с мастер-классами и рынком",
+        location="Центр культуры",
+        address="Кремлевская 1",
+        categories=["восток"],
+        category_primary="культура",
+        category_secondary=["восток"],
+        interests=[WeightedInterest(name="восток", weight=1.0)],
+        user_interests=["восток"],
+        schedule=schedule,
+        sources=[EventSource(channel="test", post_id=1)],
+    )
+
+    merged = await processor.merge_similar_events_within_post([event_left, event_right])
+
+    assert len(merged) == 1
+    assert set(merged[0].categories) == {"япония", "восток"}
+    assert round(sum(item.weight for item in merged[0].interests), 4) == 1.0
+    assert set(merged[0].user_interests) == {"япония", "восток"}

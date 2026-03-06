@@ -2,7 +2,7 @@
 Pydantic модели и схемы для FastAPI приложения.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Annotated
 from pydantic import BaseModel, Field, BeforeValidator, field_validator
 from bson import ObjectId
@@ -45,13 +45,27 @@ class Price(BaseModel):
     currency: Optional[str] = None
 
 
+class WeightedInterest(BaseModel):
+    """Интерес с весом преобладания."""
+    name: str
+    weight: float = Field(..., ge=0.0, le=1.0)
+
+
 class EventBase(BaseModel):
     """Базовая модель мероприятия (соответствует ProcessedEvent из ai_processor)."""
     title: Optional[str] = None
     description: Optional[str] = None
     date: Optional[str] = None  # ISO 8601 строка, как в ProcessedEvent
+    schedule: Optional[Dict[str, Any]] = None
+    location: Optional[str] = None
+    address: Optional[str] = None
     price: Optional[Price] = None
     categories: List[str] = Field(default_factory=list)
+    category_ids: List[str] = Field(default_factory=list)
+    category_primary: Optional[str] = None
+    category_secondary: List[str] = Field(default_factory=list)
+    interests: List[WeightedInterest] = Field(default_factory=list)
+    interest_ids: List[str] = Field(default_factory=list)
     user_interests: List[str] = Field(default_factory=list)
     image_url: Optional[str] = None  # DEPRECATED, для совместимости
     image_urls: List[str] = Field(default_factory=list)
@@ -60,11 +74,33 @@ class EventBase(BaseModel):
     processed_at: Optional[datetime] = None
     raw_post_id: Optional[int] = None
     
-    @field_validator('image_urls', 'categories', 'user_interests', mode='before')
+    @field_validator(
+        'image_urls',
+        'categories',
+        'user_interests',
+        'category_secondary',
+        'category_ids',
+        'interest_ids',
+        mode='before'
+    )
     @classmethod
     def convert_none_to_list(cls, v):
         """Преобразует None в пустой список."""
         return v if v is not None else []
+
+    @field_validator('interests', mode='before')
+    @classmethod
+    def convert_none_to_weighted_list(cls, v):
+        """Преобразует None в пустой список weighted interests."""
+        return v if v is not None else []
+
+    @field_validator('category_primary', mode='before')
+    @classmethod
+    def normalize_category_primary(cls, v):
+        if v is None:
+            return None
+        value = str(v).strip()
+        return value or None
 
 
 class Event(EventBase):

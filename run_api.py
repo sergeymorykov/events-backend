@@ -18,12 +18,14 @@ if __name__ == "__main__":
         print(f"⚠️  Файл .env не найден: {env_path}")
         print("   Используются значения по умолчанию")
     
+    api_reload = os.getenv("API_RELOAD", "false").strip().lower() in {"1", "true", "yes"}
+
     # Запуск сервера
     uvicorn.run(
         "api.main:app",
         host=os.getenv("API_HOST", "0.0.0.0"),
         port=int(os.getenv("API_PORT", "8000")),
-        reload=True,
+        reload=api_reload,
         log_level="info"
     )
 

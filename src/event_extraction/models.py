@@ -199,6 +199,18 @@ class ExtractionState(BaseModel):
     # Метаданные
     errors: List[str] = Field(default_factory=list, description="Ошибки при обработке")
     current_step: str = Field(default="init", description="Текущий шаг обработки")
+    filtered_past_events_count: int = Field(
+        default=0,
+        description="Количество отфильтрованных прошедших событий"
+    )
+    skip_reason: Optional[str] = Field(
+        default=None,
+        description="Причина пропуска дальнейшей обработки"
+    )
+    processing_day_start: Optional[datetime] = Field(
+        default=None,
+        description="Опорная дата начала дня обработки"
+    )
     
     class Config:
         """Конфигурация Pydantic модели."""

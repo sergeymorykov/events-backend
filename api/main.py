@@ -236,9 +236,16 @@ async def shutdown_event():
 async def register(user_data: UserRegister, db: AsyncIOMotorDatabase = Depends(get_database)):
     """Регистрация нового пользователя."""
     try:
+        if not user_data.terms_accepted:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Необходимо согласие с условиями использования приложения"
+            )
+
         user = await create_user(
             nickname=user_data.nickname,
             name=user_data.name,
+            terms_accepted=user_data.terms_accepted,
             db=db
         )
         return UserResponse(

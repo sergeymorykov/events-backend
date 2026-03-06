@@ -59,6 +59,12 @@ class EventExtractionGraph:
             model_name=model_name,
             qdrant_client=qdrant_client,
         )
+        self._last_run_meta: Dict[str, Any] = {
+            "filtered_past_events_count": 0,
+            "skip_reason": None,
+            "events_before_filter": 0,
+            "events_after_filter": 0,
+        }
         
         # Инициализация графа
         self.graph = self._build_graph()
@@ -70,12 +76,21 @@ class EventExtractionGraph:
         # Определение узлов
         workflow.add_node("split_into_events", self._split_into_events)
         workflow.add_node("extract_event_data", self._extract_event_data)
+        workflow.add_node("filter_past_events", self._filter_past_events)
         workflow.add_node("process_images", self._process_images)
         
         # Определение рёбер
         workflow.set_entry_point("split_into_events")
         workflow.add_edge("split_into_events", "extract_event_data")
-        workflow.add_edge("extract_event_data", "process_images")
+        workflow.add_edge("extract_event_data", "filter_past_events")
+        workflow.add_conditional_edges(
+            "filter_past_events",
+            self._route_after_filter,
+            {
+                "process_images": "process_images",
+                "end": END,
+            },
+        )
         workflow.add_edge("process_images", END)
         
         return workflow.compile()
@@ -427,7 +442,7 @@ class EventExtractionGraph:
     
     async def _process_images(self, state: ExtractionState) -> ExtractionState:
         """
-        Узел 3: Обработка изображений (скачивание или генерация афиш).
+        Узел 4: Обработка изображений (скачивание или генерация афиш).
         
         Args:
             state: Текущее состояние
@@ -482,6 +497,81 @@ class EventExtractionGraph:
                     state.errors.append(f"Ошибка генерации афиши: {e}")
         
         return state
+
+    @staticmethod
+    def _extract_event_datetime(event: StructuredEvent) -> Optional[datetime]:
+        if not event.schedule:
+            return None
+        if hasattr(event.schedule, "date_start"):
+            return event.schedule.date_start
+        if hasattr(event.schedule, "valid_from"):
+            return event.schedule.valid_from
+        if hasattr(event.schedule, "approximate_start"):
+            return event.schedule.approximate_start
+        return None
+
+    @staticmethod
+    def _to_naive_datetime(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value
+        return value.astimezone().replace(tzinfo=None)
+
+    async def _filter_past_events(self, state: ExtractionState) -> ExtractionState:
+        """
+        Узел 3: Ранний отсев прошедших событий относительно дня обработки.
+
+        Args:
+            state: Текущее состояние
+
+        Returns:
+            Обновлённое состояние
+        """
+        logger.info("Шаг 3: Фильтрация прошедших событий")
+        state.current_step = "filter_past_events"
+        state.skip_reason = None
+
+        processing_day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        state.processing_day_start = processing_day_start
+
+        if not state.events:
+            return state
+
+        kept_events: List[StructuredEvent] = []
+        filtered_count = 0
+
+        for event in state.events:
+            event_datetime = self._extract_event_datetime(event)
+            if not event_datetime:
+                kept_events.append(event)
+                continue
+
+            event_day_start = self._to_naive_datetime(event_datetime).replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+            if event_day_start < processing_day_start:
+                filtered_count += 1
+                continue
+            kept_events.append(event)
+
+        state.filtered_past_events_count += filtered_count
+        state.events = kept_events
+
+        if filtered_count:
+            logger.info(f"Отфильтровано прошедших событий: {filtered_count}")
+        if not state.events:
+            state.skip_reason = "all_events_in_past"
+            logger.info("Все события в посте прошедшие, дальнейшая обработка остановлена")
+
+        return state
+
+    @staticmethod
+    def _route_after_filter(state: ExtractionState) -> str:
+        if not state.events:
+            return "end"
+        return "process_images"
     
     async def run_extraction_graph(
         self,
@@ -509,6 +599,12 @@ class EventExtractionGraph:
         logger.info("=" * 60)
         logger.info("ЗАПУСК LANGGRAPH АГЕНТА")
         logger.info("=" * 60)
+        self._last_run_meta = {
+            "filtered_past_events_count": 0,
+            "skip_reason": None,
+            "events_before_filter": 0,
+            "events_after_filter": 0,
+        }
         
         # Инициализация состояния
         initial_state = ExtractionState(
@@ -537,10 +633,20 @@ class EventExtractionGraph:
                 logger.error(f"Неожиданный тип результата графа: {type(raw_result).__name__}")
                 return []
             
+            self._last_run_meta = {
+                "filtered_past_events_count": result_state.filtered_past_events_count,
+                "skip_reason": result_state.skip_reason,
+                "events_before_filter": len(result_state.raw_events),
+                "events_after_filter": len(result_state.events),
+            }
+
             logger.info("=" * 60)
             logger.info("РЕЗУЛЬТАТ ИЗВЛЕЧЕНИЯ:")
             logger.info(f"  Событий извлечено: {len(result_state.events)}")
             logger.info(f"  Ошибок: {len(result_state.errors)}")
+            logger.info(f"  Отфильтровано как прошедшие: {result_state.filtered_past_events_count}")
+            if result_state.skip_reason:
+                logger.info(f"  Причина пропуска: {result_state.skip_reason}")
             if result_state.errors:
                 for error in result_state.errors:
                     logger.warning(f"    - {error}")
@@ -551,3 +657,7 @@ class EventExtractionGraph:
         except Exception as e:
             logger.error(f"Критическая ошибка в графе: {e}", exc_info=True)
             return []
+
+    def get_last_run_meta(self) -> Dict[str, Any]:
+        """Возвращает метаданные последнего запуска графа."""
+        return dict(self._last_run_meta)

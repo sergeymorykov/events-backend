@@ -6,16 +6,32 @@ services:
     image: mongo:4.4
     ports:
       - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USERNAME:-admin}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-admin123}
+      - MONGO_INITDB_DATABASE=${MONGODB_DB_NAME:-events_db}
     volumes:
       - mongodb_data:/data/db
       - mongodb_config:/data/configdb
     networks:
       - events_network
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      test: echo 'db.runCommand("ping").ok' | mongosh mongodb://$$MONGO_INITDB_ROOT_USERNAME:$$MONGO_INITDB_ROOT_PASSWORD@localhost:27017/admin --quiet
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Qdrant vector database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: events_qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - events_network
 
   # FastAPI приложение
   api:
@@ -29,9 +45,12 @@ services:
     environment:
       - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
       - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-change-in-production}
       - API_HOST=0.0.0.0
       - API_PORT=8000
+      - API_RELOAD=false
     env_file:
       - .env
     volumes:
@@ -41,6 +60,8 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     networks:
       - events_network
     command: python run_api.py
@@ -55,6 +76,8 @@ services:
     environment:
       - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
       - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
       - IMAGES_DIR=images
     env_file:
       - .env
@@ -65,6 +88,8 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     networks:
       - events_network
     command: python run_ai_processor.py
@@ -81,6 +106,8 @@ services:
     environment:
       - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
       - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
       - IMAGES_DIR=images
     env_file:
       - .env
@@ -91,6 +118,8 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     networks:
       - events_network
     command: python run_parser.py
@@ -133,6 +162,8 @@ services:
     environment:
       - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
       - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
       - IMAGES_DIR=images
     env_file:
       - .env
@@ -143,6 +174,8 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     networks:
       - events_network
     command: python run_ai_processor_scheduler.py
@@ -153,6 +186,8 @@ volumes:
   mongodb_data:
     driver: local
   mongodb_config:
+    driver: local
+  qdrant_data:
     driver: local
 
 networks:

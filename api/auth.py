@@ -45,8 +45,19 @@ async def get_user_by_nickname(nickname: str, db: AsyncIOMotorDatabase) -> Optio
     return None
 
 
-async def create_user(nickname: str, name: str, db: AsyncIOMotorDatabase) -> User:
+async def create_user(
+    nickname: str,
+    name: str,
+    terms_accepted: bool,
+    db: AsyncIOMotorDatabase
+) -> User:
     """Создание нового пользователя."""
+    if not terms_accepted:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Необходимо согласие с условиями использования приложения"
+        )
+
     # Проверка существования пользователя
     existing_user = await get_user_by_nickname(nickname, db)
     if existing_user:
@@ -60,7 +71,9 @@ async def create_user(nickname: str, name: str, db: AsyncIOMotorDatabase) -> Use
         "nickname": nickname,
         "name": name,
         "interests": [],
-        "interest_scores": {}
+        "interest_scores": {},
+        "terms_accepted": True,
+        "terms_accepted_at": datetime.utcnow()
     }
     
     result = await db.users.insert_one(user_data)

@@ -4,7 +4,7 @@
 
 import pytest
 from unittest.mock import Mock, AsyncMock
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.event_extraction.langgraph_agent import EventExtractionGraph
 from src.event_extraction.models import ExtractionState
@@ -146,3 +146,84 @@ async def test_process_images_generation(mock_llm_client, mock_image_handler):
     mock_image_handler.generate_event_poster.assert_called_once()
     assert result.events[0].images == ["generated_poster.png"]
     assert result.events[0].poster_generated
+
+
+def _llm_response(content: str) -> Mock:
+    response = Mock()
+    response.choices = [Mock(message=Mock(content=content))]
+    return response
+
+
+@pytest.mark.asyncio
+async def test_run_extraction_graph_all_past_events_skips_image_generation(
+    mock_llm_client,
+    mock_image_handler,
+):
+    """Если все события прошедшие, шаг генерации афиш не запускается."""
+    agent = EventExtractionGraph(
+        llm_client=mock_llm_client,
+        image_handler=mock_image_handler,
+    )
+    past_date = (datetime.now() - timedelta(days=2)).replace(microsecond=0).isoformat()
+
+    mock_llm_client.chat.completions.create.side_effect = [
+        _llm_response('["Событие из прошлого"]'),
+        _llm_response(
+            f'{{"title":"Событие из прошлого","schedule":{{"type":"exact","date_start":"{past_date}"}},"categories":[],"interests":[]}}'
+        ),
+    ]
+
+    result_events = await agent.run_extraction_graph(
+        text="Анонс прошедшего события",
+        message_date=datetime.now(),
+        images=[],
+        hashtags=[],
+        channel="test",
+        post_id=1,
+    )
+
+    meta = agent.get_last_run_meta()
+    assert result_events == []
+    assert meta["skip_reason"] == "all_events_in_past"
+    assert meta["filtered_past_events_count"] == 1
+    mock_image_handler.generate_event_poster.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_extraction_graph_mixed_events_generates_only_for_upcoming(
+    mock_llm_client,
+    mock_image_handler,
+):
+    """В смешанном посте прошедшие события отбрасываются до генерации афиш."""
+    agent = EventExtractionGraph(
+        llm_client=mock_llm_client,
+        image_handler=mock_image_handler,
+    )
+    past_date = (datetime.now() - timedelta(days=2)).replace(microsecond=0).isoformat()
+    future_date = (datetime.now() + timedelta(days=2)).replace(microsecond=0).isoformat()
+
+    mock_llm_client.chat.completions.create.side_effect = [
+        _llm_response('["Прошедшее событие", "Будущее событие"]'),
+        _llm_response(
+            f'{{"title":"Прошедшее событие","schedule":{{"type":"exact","date_start":"{past_date}"}},"categories":[],"interests":[]}}'
+        ),
+        _llm_response(
+            f'{{"title":"Будущее событие","schedule":{{"type":"exact","date_start":"{future_date}"}},"categories":[],"interests":[]}}'
+        ),
+    ]
+
+    result_events = await agent.run_extraction_graph(
+        text="Два события",
+        message_date=datetime.now(),
+        images=[],
+        hashtags=[],
+        channel="test",
+        post_id=2,
+    )
+
+    meta = agent.get_last_run_meta()
+    assert len(result_events) == 1
+    assert result_events[0].title == "Будущее событие"
+    assert meta["filtered_past_events_count"] == 1
+    assert meta["skip_reason"] is None
+    mock_image_handler.generate_event_poster.assert_called_once()

@@ -106,7 +106,13 @@ class PostProcessor:
             logger.error(f"Ошибка проверки обработки поста: {e}")
             return False
     
-    async def _mark_post_processed(self, post_id: int, channel: str, event_ids: List[str]):
+    async def _mark_post_processed(
+        self,
+        post_id: int,
+        channel: str,
+        event_ids: List[str],
+        extra_meta: Optional[Dict[str, Any]] = None
+    ):
         """
         Отметка поста как обработанного.
         
@@ -114,16 +120,21 @@ class PostProcessor:
             post_id: ID поста
             channel: Название канала
             event_ids: Список ID извлечённых событий
+            extra_meta: Дополнительные метаданные обработки
         """
         try:
+            update_payload: Dict[str, Any] = {
+                "processed_at": datetime.utcnow(),
+                "event_ids": event_ids,
+                "events_count": len(event_ids)
+            }
+            if extra_meta:
+                update_payload.update(extra_meta)
+
             await self.db.processed_posts.update_one(
                 {"post_id": post_id, "channel": channel},
                 {
-                    "$set": {
-                        "processed_at": datetime.utcnow(),
-                        "event_ids": event_ids,
-                        "events_count": len(event_ids)
-                    }
+                    "$set": update_payload
                 },
                 upsert=True
             )
@@ -471,11 +482,22 @@ class PostProcessor:
                 channel=post.channel,
                 post_id=post.post_id
             )
+            extraction_meta = self.extraction_agent.get_last_run_meta()
             
             if not events:
                 logger.warning("Не извлечено событий из поста")
                 # Всё равно отмечаем как обработанный
-                await self._mark_post_processed(post.post_id, post.channel, [])
+                await self._mark_post_processed(
+                    post.post_id,
+                    post.channel,
+                    [],
+                    extra_meta={
+                        "skip_reason": extraction_meta.get("skip_reason"),
+                        "filtered_past_events_count": extraction_meta.get("filtered_past_events_count", 0),
+                        "events_before_filter": extraction_meta.get("events_before_filter", 0),
+                        "events_after_filter": extraction_meta.get("events_after_filter", 0),
+                    },
+                )
                 return []
             
             logger.info(f"Извлечено событий: {len(events)}")
@@ -563,7 +585,17 @@ class PostProcessor:
                     continue
             
             # Отметка поста как обработанного
-            await self._mark_post_processed(post.post_id, post.channel, saved_event_ids)
+            await self._mark_post_processed(
+                post.post_id,
+                post.channel,
+                saved_event_ids,
+                extra_meta={
+                    "skip_reason": extraction_meta.get("skip_reason"),
+                    "filtered_past_events_count": extraction_meta.get("filtered_past_events_count", 0),
+                    "events_before_filter": extraction_meta.get("events_before_filter", 0),
+                    "events_after_filter": extraction_meta.get("events_after_filter", len(events)),
+                },
+            )
             
             logger.info("=" * 60)
             logger.info(f"ПОСТ ОБРАБОТАН: {len(saved_event_ids)} событий сохранено")

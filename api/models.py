@@ -25,6 +25,7 @@ class UserRegister(BaseModel):
     """Модель регистрации пользователя."""
     nickname: str = Field(..., min_length=3, max_length=20, pattern="^[a-zA-Z0-9_]+$", description="Никнейм (3-20 символов, только буквы, цифры и подчеркивание)")
     name: str = Field(..., min_length=1, max_length=100)
+    terms_accepted: bool = Field(..., description="Согласие с условиями использования приложения")
 
 class UserLogin(BaseModel):
     """Модель входа пользователя."""
@@ -150,6 +151,8 @@ class User(BaseModel):
     name: str
     interests: List[str] = Field(default_factory=list)
     interest_scores: Dict[str, float] = Field(default_factory=dict)
+    terms_accepted: bool = False
+    terms_accepted_at: Optional[datetime] = None
     
     class Config:
         populate_by_name = True

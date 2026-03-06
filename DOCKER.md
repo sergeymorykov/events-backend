@@ -26,7 +26,7 @@ cp env.example .env
 ### 2. Запуск всех сервисов
 
 ```bash
-# Запуск MongoDB + FastAPI + AI процессор
+# Запуск базового стека (MongoDB + Qdrant + FastAPI)
 docker-compose up -d
 
 # Просмотр логов
@@ -39,11 +39,11 @@ docker-compose down
 ### 3. Запуск отдельных сервисов
 
 ```bash
-# Только MongoDB + FastAPI
-docker-compose up -d mongodb api
+# Только MongoDB + Qdrant + FastAPI
+docker-compose up -d mongodb qdrant api
 
-# MongoDB + FastAPI + AI процессор
-docker-compose up -d mongodb api ai_processor
+# MongoDB + Qdrant + FastAPI + AI процессор
+docker-compose up -d mongodb qdrant api --profile manual ai_processor
 
 # Telegram парсер (однократный запуск)
 docker-compose --profile parser up -d telegram_parser
@@ -62,6 +62,11 @@ docker-compose --profile scheduler up -d telegram_scheduler ai_processor_schedul
 - Данные сохраняются в volume `mongodb_data`
 - Автоматический healthcheck
 
+### Qdrant
+- Порт: `6333` (REST API)
+- Данные сохраняются в volume `qdrant_data`
+- Используется модулем `event_extraction` для дедупликации
+
 ### FastAPI (API)
 - Порт: `8000` (по умолчанию)
 - Доступен по адресу: `http://localhost:8000`
@@ -70,7 +75,8 @@ docker-compose --profile scheduler up -d telegram_scheduler ai_processor_schedul
 ### AI процессор
 - Обрабатывает необработанные посты из MongoDB
 - Генерирует изображения и описания
-- Запускается автоматически при старте
+- Требует доступный Qdrant
+- Запускается вручную (profile: `manual`)
 
 ### Telegram парсер
 - Парсит посты из Telegram каналов
@@ -112,6 +118,7 @@ MONGO_ROOT_USERNAME=admin
 MONGO_ROOT_PASSWORD=admin123
 MONGODB_DB_NAME=events_db
 MONGODB_PORT=27017
+MONGODB_URI=mongodb://admin:admin123@mongodb:27017/events_db?authSource=admin
 
 # FastAPI
 API_PORT=8000
@@ -130,6 +137,11 @@ LLM_MODEL_NAME=google/gemini-3-pro-preview-free
 IMAGE_LLM_BASE_URL=https://zenmux.ai/api/v1
 IMAGE_LLM_API_KEYS=key1,key2
 IMAGE_LLM_MODEL=google/gemini-3-pro-image-preview-free
+
+# Qdrant
+QDRANT_HOST=qdrant
+QDRANT_PORT=6333
+QDRANT_COLLECTION=events
 ```
 
 ## Volumes

@@ -145,6 +145,50 @@ async def test_process_post_already_processed(mock_clients):
 
 
 @pytest.mark.asyncio
+async def test_process_post_marks_skip_reason_when_all_events_filtered(mock_clients):
+    """Если все события отфильтрованы как прошедшие, причина сохраняется в processed_posts."""
+    db_client, qdrant_client, llm_client, image_handler = mock_clients
+
+    db_mock = Mock()
+    db_mock.processed_posts.find_one = AsyncMock(return_value=None)
+    db_mock.processed_posts.update_one = AsyncMock()
+    db_client.__getitem__ = Mock(return_value=db_mock)
+
+    processor = PostProcessor(
+        db_client=db_client,
+        qdrant_client=qdrant_client,
+        llm_client=llm_client,
+        image_handler=image_handler
+    )
+    processor.extraction_agent = Mock()
+    processor.extraction_agent.run_extraction_graph = AsyncMock(return_value=[])
+    processor.extraction_agent.get_last_run_meta = Mock(return_value={
+        "skip_reason": "all_events_in_past",
+        "filtered_past_events_count": 3,
+        "events_before_filter": 3,
+        "events_after_filter": 0,
+    })
+
+    raw_post = {
+        "text": "Старые события",
+        "post_id": 555,
+        "channel": "test",
+        "photo_urls": [],
+        "hashtags": []
+    }
+
+    events = await processor.process_post(raw_post)
+
+    assert events == []
+    db_mock.processed_posts.update_one.assert_called_once()
+    update_payload = db_mock.processed_posts.update_one.call_args.args[1]["$set"]
+    assert update_payload["skip_reason"] == "all_events_in_past"
+    assert update_payload["filtered_past_events_count"] == 3
+    assert update_payload["events_before_filter"] == 3
+    assert update_payload["events_after_filter"] == 0
+
+
+@pytest.mark.asyncio
 async def test_save_event_persists_canonical_hash_without_embedding_vector():
     """При сохранении в Mongo сохраняется canonical_hash, но не embedding_vector."""
     processor = object.__new__(PostProcessor)

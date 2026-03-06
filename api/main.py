@@ -190,6 +190,7 @@ async def startup_event():
     await db.events.create_index([("date", 1), ("_id", 1)])
     await db.events.create_index([("schedule.date_start", -1), ("_id", -1)])
     await db.events.create_index([("schedule.date_start", 1), ("_id", 1)])
+    await db.events.create_index([("canonical_hash", 1)])
     # Текстовый индекс для поиска по title
     await db.events.create_index(
         [("title", "text")],
@@ -344,6 +345,12 @@ async def get_events(
     
     if date_to:
         event_date_filter["$lte"] = date_to.replace(tzinfo=None)
+
+    # По умолчанию показываем только актуальные события:
+    # - с сегодняшнего дня и позже
+    # - либо регулярные (recurring_weekly), либо нечеткие (fuzzy)
+    current_day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    apply_default_upcoming_filter = date_from is None and date_to is None
     
     # Проверка авторизации для for_my_interests (фильтр не применяется в БД, только ранжирование)
     user_scores = {}
@@ -412,6 +419,15 @@ async def get_events(
 
     if event_date_filter:
         pipeline.append({"$match": {"_event_date": event_date_filter}})
+    elif apply_default_upcoming_filter:
+        pipeline.append({
+            "$match": {
+                "$or": [
+                    {"_event_date": {"$gte": current_day_start}},
+                    {"schedule.type": {"$in": ["recurring_weekly", "fuzzy"]}},
+                ]
+            }
+        })
 
     if cursor_date and cursor_id:
         if sort_direction == -1:  # desc - новые первые

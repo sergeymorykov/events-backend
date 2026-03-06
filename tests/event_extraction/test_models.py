@@ -104,6 +104,7 @@ def test_structured_event():
     assert event.categories == ["концерт", "музыка"]
     assert len(event.sources) == 1
     assert not event.poster_generated
+    assert "embedding_vector" not in event.model_dump()
 
 
 def test_extraction_state():

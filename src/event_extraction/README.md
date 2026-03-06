@@ -58,6 +58,10 @@ is_duplicate, original_id = await deduplicator.is_duplicate_event(event, embeddi
 await deduplicator.add_event_to_index(event, embedding, event_id)
 ```
 
+**Политика хранения метаданных дедупликации:**
+- `embedding` хранится только в Qdrant (vector storage);
+- `canonical_hash` сохраняется в Mongo `events` и дублируется в payload Qdrant для быстрого hash-фильтра и диагностики.
+
 ### 4. ImageHandler
 Генерация афиш только через LLM API:
 - OpenAI-совместимый API (Bothub/ZenMux/OpenAI)
@@ -140,6 +144,7 @@ ScheduleFuzzy(
 5. **Сохранение**:
    - Если дубликат → обновление источников
    - Если новое → сохранение в MongoDB + Qdrant
+   - В Mongo сохраняется `canonical_hash`, вектор эмбеддинга в Mongo не сохраняется
 6. **Отметка поста**: запись в `processed_posts`
 
 ## Конфигурация

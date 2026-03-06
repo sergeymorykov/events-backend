@@ -147,7 +147,8 @@ class EventDeduplicator:
     async def is_duplicate_event(
         self,
         event: StructuredEvent,
-        embedding: List[float]
+        embedding: List[float],
+        canonical_hash: Optional[str] = None,
     ) -> tuple[bool, Optional[str]]:
         """
         Проверка, является ли событие дубликатом.
@@ -164,15 +165,19 @@ class EventDeduplicator:
             Кортеж (является_дубликатом, id_оригинального_события)
         """
         try:
-            # Генерация канонического хэша
-            canonical_hash = self.generate_canonical_hash(event)
+            # Используем заранее рассчитанный хэш, если передан
+            effective_canonical_hash = (
+                canonical_hash
+                or event.canonical_hash
+                or self.generate_canonical_hash(event)
+            )
             
             # Шаг 1: Быстрый фильтр по хэшу
             hash_filter = Filter(
                 must=[
                     FieldCondition(
                         key="canonical_hash",
-                        match=MatchValue(value=canonical_hash)
+                        match=MatchValue(value=effective_canonical_hash)
                     )
                 ]
             )
@@ -196,7 +201,7 @@ class EventDeduplicator:
                     return False, None
                 logger.info(
                     f"Найден дубликат по хэшу: {event.title[:50]} "
-                    f"(hash={canonical_hash[:8]}...)"
+                    f"(hash={effective_canonical_hash[:8]}...)"
                 )
                 return True, str(original_event_id)
             
@@ -240,7 +245,8 @@ class EventDeduplicator:
         self,
         event: StructuredEvent,
         embedding: List[float],
-        event_id: str
+        event_id: str,
+        canonical_hash: Optional[str] = None,
     ) -> bool:
         """
         Добавление события в индекс Qdrant.
@@ -254,13 +260,17 @@ class EventDeduplicator:
             Успех операции
         """
         try:
-            # Генерация канонического хэша
-            canonical_hash = self.generate_canonical_hash(event)
+            # Используем заранее рассчитанный хэш, если передан
+            effective_canonical_hash = (
+                canonical_hash
+                or event.canonical_hash
+                or self.generate_canonical_hash(event)
+            )
             
             # Подготовка payload
             payload = {
                 "event_id": event_id,
-                "canonical_hash": canonical_hash,
+                "canonical_hash": effective_canonical_hash,
                 "title": event.title,
                 "description": event.description or "",
                 "location": event.location or "",

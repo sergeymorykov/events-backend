@@ -122,7 +122,6 @@ class StructuredEvent(BaseModel):
     
     # Метаданные
     canonical_hash: Optional[str] = Field(None, description="Канонический хэш для дедупликации")
-    embedding_vector: Optional[List[float]] = Field(None, description="Вектор эмбеддинга для семантического поиска")
     processed_at: datetime = Field(default_factory=datetime.utcnow, description="Время обработки")
     
     @field_validator('categories', 'user_interests', 'category_secondary', 'category_ids', 'interest_ids')

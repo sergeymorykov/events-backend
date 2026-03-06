@@ -145,6 +145,30 @@ async def test_process_post_already_processed(mock_clients):
 
 
 @pytest.mark.asyncio
+async def test_save_event_persists_canonical_hash_without_embedding_vector():
+    """При сохранении в Mongo сохраняется canonical_hash, но не embedding_vector."""
+    processor = object.__new__(PostProcessor)
+    processor.db = Mock()
+    processor.db.events = Mock()
+    processor.db.events.insert_one = AsyncMock(return_value=Mock(inserted_id="507f1f77bcf86cd799439011"))
+    processor.db.events.find_one = AsyncMock(return_value={"_id": "507f1f77bcf86cd799439011"})
+    processor.db_name = "events_db"
+
+    event = StructuredEvent(
+        title="Тестовое событие",
+        canonical_hash="fixed-hash-value",
+        sources=[EventSource(channel="test", post_id=1)],
+    )
+
+    saved_id = await PostProcessor._save_event(processor, event)
+
+    assert saved_id == "507f1f77bcf86cd799439011"
+    insert_payload = processor.db.events.insert_one.call_args.args[0]
+    assert insert_payload["canonical_hash"] == "fixed-hash-value"
+    assert "embedding_vector" not in insert_payload
+
+
+@pytest.mark.asyncio
 async def test_merge_similar_events_within_post_combines_duplicates():
     """Схожие события внутри поста объединяются в одну карточку."""
     processor = object.__new__(PostProcessor)

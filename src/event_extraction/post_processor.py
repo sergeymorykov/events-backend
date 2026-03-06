@@ -489,6 +489,9 @@ class PostProcessor:
                 logger.info(f"--- Обработка события {idx}/{len(events)}: {event.title[:50]} ---")
                 
                 try:
+                    canonical_hash = self.deduplicator.generate_canonical_hash(event)
+                    event.canonical_hash = canonical_hash
+
                     # Генерация эмбеддинга для дедупликации
                     embedding_text = self._build_dedup_embedding_text(event)
                     embedding = await self._get_embedding(embedding_text)
@@ -503,7 +506,7 @@ class PostProcessor:
                     
                     # Проверка дубликатов
                     is_duplicate, original_event_id = await self.deduplicator.is_duplicate_event(
-                        event, embedding
+                        event, embedding, canonical_hash=canonical_hash
                     )
                     
                     if is_duplicate and original_event_id:
@@ -551,7 +554,7 @@ class PostProcessor:
                             
                             # Добавление в Qdrant для будущей дедупликации
                             await self.deduplicator.add_event_to_index(
-                                event, embedding, event_id
+                                event, embedding, event_id, canonical_hash=canonical_hash
                             )
                             saved_event_ids.append(event_id)
                 

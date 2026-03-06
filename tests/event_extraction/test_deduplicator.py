@@ -121,3 +121,33 @@ async def test_add_event_to_index_saves_canonical_payload():
     assert payload["canonical_categories"] == ["музыка"]
     assert payload["category_primary"] == "культура"
     assert payload["category_secondary"] == ["музыка"]
+
+
+@pytest.mark.asyncio
+async def test_add_event_to_index_uses_passed_canonical_hash():
+    """Если canonical_hash передан явно, в payload уходит именно он."""
+    qdrant_client = Mock()
+    qdrant_client.get_collections.return_value = Mock(collections=[Mock(name="events")])
+    qdrant_client.upsert.return_value = None
+
+    deduplicator = EventDeduplicator(
+        qdrant_client=qdrant_client,
+        collection_name="events",
+    )
+
+    event = StructuredEvent(
+        title="Событие без предрасчета",
+        sources=[EventSource(channel="test", post_id=99)],
+    )
+
+    ok = await deduplicator.add_event_to_index(
+        event=event,
+        embedding=[0.1, 0.2, 0.3],
+        event_id="event-1",
+        canonical_hash="explicit-canonical-hash",
+    )
+
+    assert ok is True
+    upsert_kwargs = qdrant_client.upsert.call_args.kwargs
+    payload = upsert_kwargs["points"][0].payload
+    assert payload["canonical_hash"] == "explicit-canonical-hash"

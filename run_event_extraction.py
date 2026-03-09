@@ -37,7 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def main():
+async def main() -> int:
     """Главная функция для запуска обработки постов."""
     try:
         # Валидация конфигурации
@@ -46,7 +46,7 @@ async def main():
         
         if not valid:
             logger.error(f"❌ Ошибка конфигурации: {message}")
-            return
+            return 1
         
         if message:
             logger.warning(f"⚠️  Предупреждения конфигурации:\n{message}")
@@ -117,6 +117,7 @@ async def main():
         print("=" * 60)
         
         logger.info("✅ Обработка завершена успешно")
+        return 0
     
     except InsufficientQuotaError as e:
         # Критическая ошибка квоты - завершаем с кодом 2
@@ -124,14 +125,15 @@ async def main():
         logger.critical("❌ КРИТИЧЕСКАЯ ОШИБКА: API QUOTA EXCEEDED")
         logger.critical("   Модуль event_extraction завершён")
         logger.critical("=" * 60)
-        sys.exit(2)
+        return 2
     
     except KeyboardInterrupt:
         logger.info("⚠️  Обработка прервана пользователем")
+        return 130
     
     except Exception as e:
         logger.error(f"❌ Критическая ошибка: {e}", exc_info=True)
-        sys.exit(1)
+        return 1
 
 
 if __name__ == "__main__":
@@ -142,4 +144,4 @@ if __name__ == "__main__":
 ╚════════════════════════════════════════════════════════════╝
     """)
     
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))

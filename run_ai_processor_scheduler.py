@@ -30,8 +30,11 @@ async def extraction_job() -> None:
     """Задача планировщика: единичный запуск extraction."""
     logger.info("Запуск event_extraction по расписанию")
     try:
-        await run_event_extraction_main()
-        logger.info("Запуск event_extraction завершен")
+        exit_code = await run_event_extraction_main()
+        if exit_code == 0:
+            logger.info("Запуск event_extraction завершен")
+            return
+        logger.warning("event_extraction завершился с кодом: %s", exit_code)
     except Exception as exc:
         logger.error("Ошибка в scheduled extraction: %s", exc, exc_info=True)
 
@@ -50,9 +53,16 @@ async def main() -> None:
     logger.info("Планировщик event_extraction запущен (каждые 4 часа)")
     logger.info("Нажмите Ctrl+C для остановки")
 
-    await extraction_job()
-    while True:
-        await asyncio.sleep(3600)
+    try:
+        await extraction_job()
+        while True:
+            await asyncio.sleep(3600)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("Остановка планировщика event_extraction")
+    finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+        logger.info("Планировщик event_extraction остановлен")
 
 
 if __name__ == "__main__":

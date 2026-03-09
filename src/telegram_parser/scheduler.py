@@ -6,6 +6,7 @@
 import asyncio
 import logging
 from datetime import datetime
+from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -39,7 +40,21 @@ class TelegramScheduler:
         """
         self.config = config
         self.scheduler = AsyncIOScheduler()
-        self.parser: TelegramParser = None
+        self.parser: Optional[TelegramParser] = None
+        self.immediate_parse_task: Optional[asyncio.Task] = None
+
+    async def _run_immediate_parse(self) -> None:
+        """Немедленный запуск парсинга вне APScheduler."""
+        is_first = await self._is_first_run()
+        await self.parse_job(is_first_run=is_first)
+
+    def _start_immediate_parse(self) -> None:
+        """Запускает немедленный парсинг как отдельную asyncio задачу."""
+        if self.immediate_parse_task and not self.immediate_parse_task.done():
+            logger.warning("Немедленный парсинг уже выполняется, повторный запуск пропущен")
+            return
+
+        self.immediate_parse_task = asyncio.create_task(self._run_immediate_parse())
         
     async def _is_first_run(self) -> bool:
         """
@@ -134,12 +149,10 @@ class TelegramScheduler:
         # Запуск планировщика
         self.scheduler.start()
         
-        # Если нужен немедленный первый запуск — запускаем напрямую, без APScheduler.
-        # Job через 'date' trigger вызывал CancelledError из-за гонки в asyncio.
+        # Если нужен немедленный первый запуск
         if immediate:
             logger.info("▶️  Запуск первого парсинга...")
-            is_first = await self._is_first_run()
-            asyncio.create_task(self.parse_job(is_first_run=is_first))
+            self._start_immediate_parse()
         
         logger.info("✅ Планировщик запущен и работает")
         logger.info(f"   Следующий запуск: через {interval_hours} часов")
@@ -181,11 +194,10 @@ class TelegramScheduler:
         # Запуск планировщика
         self.scheduler.start()
         
-        # Если нужен немедленный первый запуск — запускаем напрямую, без APScheduler.
+        # Если нужен немедленный первый запуск
         if immediate:
             logger.info("▶️  Запуск первого парсинга...")
-            is_first = await self._is_first_run()
-            asyncio.create_task(self.parse_job(is_first_run=is_first))
+            self._start_immediate_parse()
         
         logger.info("✅ Планировщик запущен и работает")
         logger.info(f"   Следующий запуск: {hour:02d}:{minute:02d}")
@@ -195,6 +207,8 @@ class TelegramScheduler:
     def stop(self):
         """Остановка планировщика."""
         logger.info("Остановка планировщика...")
+        if self.immediate_parse_task and not self.immediate_parse_task.done():
+            self.immediate_parse_task.cancel()
         self.scheduler.shutdown()
         logger.info("Планировщик остановлен")
     

@@ -27,17 +27,17 @@ services:
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongo mongodb://$$MONGO_INITDB_ROOT_USERNAME:$$MONGO_INITDB_ROOT_PASSWORD@localhost:27017/admin --quiet
       interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
     deploy:
       resources:
         limits:
           cpus: '0.5'
-          memory: 256M
+          memory: 512M
         reservations:
           cpus: '0.1'
-          memory: 128M
+          memory: 256M
 
   # Qdrant vector database
   qdrant:
@@ -59,19 +59,19 @@ services:
         max-size: "5m"
         max-file: "2"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      test: ["CMD", "curl", "-f", "http://localhost:6333/"]
       interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
     deploy:
       resources:
         limits:
           cpus: '0.5'
-          memory: 256M
+          memory: 512M
         reservations:
           cpus: '0.1'
-          memory: 128M
+          memory: 256M
 
   # FastAPI приложение
   api:

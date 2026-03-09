@@ -134,19 +134,12 @@ class TelegramScheduler:
         # Запуск планировщика
         self.scheduler.start()
         
-        # Если нужен немедленный первый запуск
+        # Если нужен немедленный первый запуск — запускаем напрямую, без APScheduler.
+        # Job через 'date' trigger вызывал CancelledError из-за гонки в asyncio.
         if immediate:
             logger.info("▶️  Запуск первого парсинга...")
-            # Проверяем, первый ли это запуск, и запускаем немедленно
             is_first = await self._is_first_run()
-            # Добавляем одноразовое задание с минимальной задержкой (0 секунд)
-            self.scheduler.add_job(
-                self.parse_job,
-                'date',  # Одноразовый запуск
-                id='parse_channels_immediate',
-                name='Немедленный парсинг',
-                kwargs={'is_first_run': is_first}
-            )
+            asyncio.create_task(self.parse_job(is_first_run=is_first))
         
         logger.info("✅ Планировщик запущен и работает")
         logger.info(f"   Следующий запуск: через {interval_hours} часов")
@@ -188,19 +181,11 @@ class TelegramScheduler:
         # Запуск планировщика
         self.scheduler.start()
         
-        # Если нужен немедленный первый запуск
+        # Если нужен немедленный первый запуск — запускаем напрямую, без APScheduler.
         if immediate:
             logger.info("▶️  Запуск первого парсинга...")
-            # Проверяем, первый ли это запуск, и запускаем немедленно
             is_first = await self._is_first_run()
-            # Добавляем одноразовое задание с минимальной задержкой
-            self.scheduler.add_job(
-                self.parse_job,
-                'date',  # Одноразовый запуск
-                id='parse_channels_immediate',
-                name='Немедленный парсинг',
-                kwargs={'is_first_run': is_first}
-            )
+            asyncio.create_task(self.parse_job(is_first_run=is_first))
         
         logger.info("✅ Планировщик запущен и работает")
         logger.info(f"   Следующий запуск: {hour:02d}:{minute:02d}")

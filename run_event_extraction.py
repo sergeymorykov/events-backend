@@ -4,6 +4,7 @@
 
 import asyncio
 import logging
+import os
 import sys
 from motor.motor_asyncio import AsyncIOMotorClient
 from qdrant_client import QdrantClient
@@ -93,8 +94,15 @@ async def main():
         # Обработка новых постов
         logger.info("Начало обработки новых постов...")
         
-        # Можно указать лимит через аргумент командной строки
-        limit = int(sys.argv[1]) if len(sys.argv) > 1 else None
+        # Лимит: аргумент CLI → переменная окружения BATCH_LIMIT → без лимита
+        if len(sys.argv) > 1:
+            limit = int(sys.argv[1])
+        elif os.getenv("BATCH_LIMIT"):
+            limit = int(os.environ["BATCH_LIMIT"])
+        else:
+            limit = None
+        if limit:
+            logger.info(f"Лимит обработки: {limit} постов за запуск")
         
         stats = await processor.process_new_posts_batch(limit=limit)
         

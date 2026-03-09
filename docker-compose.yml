@@ -4,22 +4,40 @@ services:
   # MongoDB база данных
   mongodb:
     image: mongo:4.4
+    container_name: events_mongodb
+    restart: unless-stopped
     ports:
       - "27017:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=${MONGO_ROOT_USERNAME:-admin}
       - MONGO_INITDB_ROOT_PASSWORD=${MONGO_ROOT_PASSWORD:-admin123}
       - MONGO_INITDB_DATABASE=${MONGODB_DB_NAME:-events_db}
+    # Ограничиваем кэш WiredTiger до ~100MB для слабой ВМ
+    command: mongod --wiredTigerCacheSizeGB 0.1 --bind_ip_all
     volumes:
       - mongodb_data:/data/db
       - mongodb_config:/data/configdb
     networks:
       - events_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh mongodb://$$MONGO_INITDB_ROOT_USERNAME:$$MONGO_INITDB_ROOT_PASSWORD@localhost:27017/admin --quiet
-      interval: 10s
+      test: echo 'db.runCommand("ping").ok' | mongo mongodb://$$MONGO_INITDB_ROOT_USERNAME:$$MONGO_INITDB_ROOT_PASSWORD@localhost:27017/admin --quiet
+      interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
 
   # Qdrant vector database
   qdrant:
@@ -28,10 +46,32 @@ services:
     restart: unless-stopped
     ports:
       - "${QDRANT_PORT:-6333}:6333"
+    environment:
+      # Хранить payload на диске вместо RAM
+      - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
     volumes:
       - qdrant_data:/qdrant/storage
     networks:
       - events_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
 
   # FastAPI приложение
   api:
@@ -61,72 +101,25 @@ services:
       mongodb:
         condition: service_healthy
       qdrant:
-        condition: service_started
+        condition: service_healthy
     networks:
       - events_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
     command: python run_api.py
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
 
-  # AI процессор (однократная обработка, для ручного запуска)
-  ai_processor:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: events_ai_processor
-    restart: "no"
-    environment:
-      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
-      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - IMAGES_DIR=images
-    env_file:
-      - .env
-    volumes:
-      - ./images:/app/images
-      - ./logs:/app/logs
-      - ./telegram_parser_session.session:/app/telegram_parser_session.session
-    depends_on:
-      mongodb:
-        condition: service_healthy
-      qdrant:
-        condition: service_started
-    networks:
-      - events_network
-    command: python run_ai_processor.py
-    profiles:
-      - manual  # Запускается только с --profile manual
-
-  # Telegram парсер (опционально, можно запускать отдельно)
-  telegram_parser:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: events_telegram_parser
-    restart: unless-stopped
-    environment:
-      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
-      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
-      - IMAGES_DIR=images
-    env_file:
-      - .env
-    volumes:
-      - ./images:/app/images
-      - ./logs:/app/logs
-      - ./telegram_parser_session.session:/app/telegram_parser_session.session
-    depends_on:
-      mongodb:
-        condition: service_healthy
-      qdrant:
-        condition: service_started
-    networks:
-      - events_network
-    command: python run_parser.py
-    profiles:
-      - parser  # Запускается только с --profile parser
-
-  # Telegram Parser Scheduler (планировщик парсинга)
+  # Telegram Parser Scheduler (всегда запущен)
   telegram_scheduler:
     build:
       context: .
@@ -136,6 +129,8 @@ services:
     environment:
       - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
       - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
       - IMAGES_DIR=images
     env_file:
       - .env
@@ -148,11 +143,22 @@ services:
         condition: service_healthy
     networks:
       - events_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
     command: python run_scheduler.py
-    profiles:
-      - scheduler  # Запускается только с --profile scheduler
+    deploy:
+      resources:
+        limits:
+          cpus: '0.3'
+          memory: 192M
+        reservations:
+          cpus: '0.05'
+          memory: 96M
 
-  # AI Processor Scheduler (планировщик обработки постов)
+  # AI Processor Scheduler (всегда запущен, первый запуск сразу)
   ai_processor_scheduler:
     build:
       context: .
@@ -175,12 +181,118 @@ services:
       mongodb:
         condition: service_healthy
       qdrant:
-        condition: service_started
+        condition: service_healthy
     networks:
       - events_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
     command: python run_ai_processor_scheduler.py
+    deploy:
+      resources:
+        limits:
+          cpus: '0.8'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+
+  # WebUI мониторинга + Prometheus метрики
+  webui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: events_webui
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
+      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - DEBUG=true
+    env_file:
+      - .env
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - events_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    command: python run_webui.py --debug
+    deploy:
+      resources:
+        limits:
+          cpus: '0.2'
+          memory: 128M
+        reservations:
+          cpus: '0.05'
+          memory: 64M
+
+  # AI процессор (однократная обработка, только для ручного запуска)
+  ai_processor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: events_ai_processor
+    restart: "no"
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
+      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - IMAGES_DIR=images
+      # Максимум постов за один ручной запуск (переопределяется через -e BATCH_LIMIT=N)
+      - BATCH_LIMIT=${BATCH_LIMIT:-50}
+    env_file:
+      - .env
+    volumes:
+      - ./images:/app/images
+      - ./logs:/app/logs
+      - ./telegram_parser_session.session:/app/telegram_parser_session.session
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    networks:
+      - events_network
+    command: python run_ai_processor.py
     profiles:
-      - scheduler  # Запускается только с --profile scheduler
+      - manual
+
+  # Telegram парсер (однократный запуск, только для ручного запуска)
+  telegram_parser:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: events_telegram_parser
+    restart: "no"
+    environment:
+      - MONGODB_URI=mongodb://${MONGO_ROOT_USERNAME:-admin}:${MONGO_ROOT_PASSWORD:-admin123}@mongodb:27017/${MONGODB_DB_NAME:-events_db}?authSource=admin
+      - MONGODB_DB_NAME=${MONGODB_DB_NAME:-events_db}
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - IMAGES_DIR=images
+    env_file:
+      - .env
+    volumes:
+      - ./images:/app/images
+      - ./logs:/app/logs
+      - ./telegram_parser_session.session:/app/telegram_parser_session.session
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - events_network
+    command: python run_parser.py
+    profiles:
+      - manual
 
 volumes:
   mongodb_data:
@@ -193,4 +305,3 @@ volumes:
 networks:
   events_network:
     driver: bridge
-

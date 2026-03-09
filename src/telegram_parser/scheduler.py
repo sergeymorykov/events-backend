@@ -49,11 +49,10 @@ class TelegramScheduler:
             True если это первый запуск, False иначе
         """
         try:
-            from pymongo import MongoClient
-            client = MongoClient(self.config.MONGODB_URI, serverSelectionTimeoutMS=5000)
+            from motor.motor_asyncio import AsyncIOMotorClient
+            client = AsyncIOMotorClient(self.config.MONGODB_URI, serverSelectionTimeoutMS=5000)
             db = client[self.config.MONGODB_DB_NAME]
-            collection = db['raw_posts']
-            count = collection.count_documents({})
+            count = await db['raw_posts'].count_documents({})
             client.close()
             return count == 0
         except Exception as e:
@@ -220,10 +219,11 @@ class TelegramScheduler:
         Блокирует выполнение до получения сигнала остановки.
         """
         try:
-            # Ожидание завершения (бесконечно)
             while True:
-                await asyncio.sleep(3600)  # Спим по часу
-        except (KeyboardInterrupt, SystemExit):
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            pass
+        finally:
             logger.info("\n⏹️  Получен сигнал остановки")
             self.stop()
 
@@ -245,6 +245,7 @@ async def main():
         # Первый запуск: парсинг за последние 3 месяца
         # Последующие запуски: каждые 4 часа, парсинг за последние 4 часа
         await scheduler.start(immediate=True, interval_hours=4)
+        await scheduler.run_forever()
         
         # Вариант 2: Каждый день в 9:00 (без немедленного запуска)
         # scheduler.start_daily(hour=9, minute=0, immediate=False)
